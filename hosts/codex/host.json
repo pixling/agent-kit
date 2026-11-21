@@ -1,0 +1,37 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "homepage": "https://developers.openai.com/codex",
+  "verified": {
+    "version": "0.163.0",
+    "date": "2026-11-05"
+  },
+  "skills": {
+    "install": "npx skills add pixling/agent-kit -a codex",
+    "paths": [
+      "~/.agents/skills",
+      ".agents/skills"
+    ]
+  },
+  "proxy": {
+    "status": "experimental",
+    "kind": "plugin",
+    "install": [
+      "codex plugin marketplace add pixling/agent-kit",
+      "In Codex, open /plugins and install pixling-proxy, then trust its hooks in /hooks"
+    ],
+    "toResident": [
+      "text",
+      "reasoning",
+      "tools",
+      "reply",
+      "permission"
+    ],
+    "fromResident": "anytime",
+    "how": "Command hooks: PreToolUse shows the commentary written before each tool call (from the session file, in a detached process), Stop shows the reply, PermissionRequest asks on the resident. What the user writes is queued into the session with `codex queue`, which starts a turn in an idle TUI session; UserPromptSubmit hands over anything still unread."
+  },
+  "docs": {
+    "order": 2,
+    "summary": "Install pixling-proxy in Codex: replies show on the resident, permission prompts become questions there, and what you write reaches the session through codex queue."
+  }
+}

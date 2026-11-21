@@ -1,0 +1,26 @@
+name: Support a host
+description: Ask for an agent or harness to be supported, or report how it behaves.
+labels: [host]
+body:
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: Name, version and link
+    validations:
+      required: true
+  - type: dropdown
+    id: extends
+    attributes:
+      label: How it can be extended
+      multiple: true
+      options:
+        - Claude-style command hooks
+        - JS/TS plugins
+        - Agent Skills (SKILL.md)
+        - Not sure
+  - type: textarea
+    id: details
+    attributes:
+      label: What you know
+      description: Docs links, hook events, how to send a message into a session, anything you tried.

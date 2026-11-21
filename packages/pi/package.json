@@ -1,0 +1,47 @@
+{
+  "name": "@pixling/pi-proxy",
+  "version": "0.1.38",
+  "description": "Talk with pi through a Pixling resident on your Mac desktop: replies show on it, and what you write there goes back to pi. Optionally it reacts to each reply and says it aloud.",
+  "keywords": [
+    "pi-extension",
+    "pi-package",
+    "pixling"
+  ],
+  "homepage": "https://pixling.app/docs/plugins/pi/",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixling/agent-kit.git",
+    "directory": "packages/pi"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "prepack": "cd ../.. && npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.mjs"
+    ]
+  }
+}

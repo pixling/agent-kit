@@ -1,0 +1,12 @@
+{
+  "name": "pixling-proxy",
+  "version": "0.1.38",
+  "description": "Talk with your agent through a Pixling resident on your Mac desktop: what the agent writes shows on it as it goes, and what you write there goes back to the agent. Optionally it reacts to each reply and says it aloud.",
+  "author": {
+    "name": "Pixling",
+    "url": "https://pixling.app"
+  },
+  "homepage": "https://pixling.app/docs/plugins/antigravity/",
+  "repository": "https://github.com/pixling/agent-kit",
+  "logo": "assets/icon.png"
+}

@@ -1,0 +1,38 @@
+{
+  "id": "pi",
+  "name": "pi",
+  "homepage": "https://github.com/earendil-works/pi",
+  "verified": {
+    "version": "1.1.0",
+    "date": "2026-11-05"
+  },
+  "skills": {
+    "install": "npx skills add pixling/agent-kit -a pi",
+    "paths": [
+      "~/.pi/agent/skills",
+      ".pi/skills",
+      "~/.agents/skills",
+      ".agents/skills"
+    ]
+  },
+  "proxy": {
+    "status": "experimental",
+    "kind": "package",
+    "package": "@pixling/pi-proxy",
+    "install": [
+      "pi install npm:@pixling/pi-proxy"
+    ],
+    "toResident": [
+      "text",
+      "reasoning",
+      "tools",
+      "reply"
+    ],
+    "fromResident": "anytime",
+    "how": "A pi extension: message_end shows each assistant message as it ends, agent_settled shows the reply, and what the user writes is sent with pi.sendUserMessage, starting a turn when pi is idle."
+  },
+  "docs": {
+    "order": 4,
+    "summary": "Install @pixling/pi-proxy in pi: replies show on the resident, and what you write there starts a turn."
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "pixling",
+  "interface": {
+    "displayName": "Pixling"
+  },
+  "plugins": [
+    {
+      "name": "pixling-proxy",
+      "source": {
+        "source": "local",
+        "path": "./plugins/pixling-proxy"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

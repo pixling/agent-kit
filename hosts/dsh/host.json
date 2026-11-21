@@ -1,0 +1,39 @@
+{
+  "id": "dsh",
+  "name": "DeepSeek Harness (dsh)",
+  "homepage": "https://github.com/deepseek-ai/deepseek-harness",
+  "verified": {
+    "version": "0.2.1-rc.2",
+    "date": "2026-11-05"
+  },
+  "skills": {
+    "install": "Copy skills/<name> into .agents/skills or $DSH_HOME/skills",
+    "paths": [
+      ".dsh/skills",
+      ".agents/skills",
+      "$DSH_HOME/skills"
+    ]
+  },
+  "proxy": {
+    "status": "experimental",
+    "kind": "package",
+    "package": "@pixling/dsh-proxy",
+    "install": [
+      "dsh plugin --profile web add @pixling/dsh-proxy",
+      "Restart the profile"
+    ],
+    "toResident": [
+      "text",
+      "reasoning",
+      "tools",
+      "reply",
+      "permission"
+    ],
+    "fromResident": "anytime",
+    "how": "A Cordis plugin: assistant/message shows each message as it ends, turn/end shows the reply, approval/request asks on the resident while the dsh UI asks too, and what the user writes steers the session through the Web or Desktop app's session controller."
+  },
+  "docs": {
+    "order": 5,
+    "summary": "Add @pixling/dsh-proxy to DeepSeek Harness: replies show on the resident, approvals are asked there, and what you write steers the session."
+  }
+}

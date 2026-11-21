@@ -1,0 +1,17 @@
+{
+  "name": "pixling",
+  "owner": {
+    "name": "Pixling",
+    "url": "https://pixling.app"
+  },
+  "metadata": {
+    "description": "Pixling plugins for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "pixling-proxy",
+      "source": "./plugins/pixling-proxy",
+      "description": "Talk with your agent through a Pixling resident on your Mac desktop. Optionally it reacts to each reply and says it aloud."
+    }
+  ]
+}

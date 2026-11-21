@@ -1,0 +1,42 @@
+{
+  "name": "@pixling/dsh-proxy",
+  "version": "0.1.38",
+  "description": "Talk with DeepSeek Harness (dsh) through a Pixling resident on your Mac desktop: replies show on it, permission prompts become questions on it, and what you write there goes back to the agent. Optionally it reacts to each reply and says it aloud.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "pixling"
+  ],
+  "homepage": "https://pixling.app/docs/plugins/dsh/",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixling/agent-kit.git",
+    "directory": "packages/dsh"
+  },
+  "files": [
+    "dist/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "prepack": "cd ../.. && npm run build"
+  },
+  "engines": {
+    "dsh": ">=0.2.0-0 <0.3.0",
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

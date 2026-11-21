@@ -1,0 +1,37 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "homepage": "https://code.claude.com",
+  "verified": {
+    "version": "2.1.318",
+    "date": "2026-11-05"
+  },
+  "skills": {
+    "install": "npx skills add pixling/agent-kit -a claude-code",
+    "paths": [
+      "~/.claude/skills",
+      ".claude/skills"
+    ]
+  },
+  "proxy": {
+    "status": "stable",
+    "kind": "plugin",
+    "install": [
+      "claude plugin marketplace add pixling/agent-kit",
+      "claude plugin install pixling-proxy@pixling"
+    ],
+    "toResident": [
+      "text",
+      "reasoning",
+      "tools",
+      "reply",
+      "permission"
+    ],
+    "fromResident": "anytime",
+    "how": "Command hooks: an async PreToolUse hook shows what the agent wrote before each tool call, Stop shows the reply, PermissionRequest asks on the resident, an asyncRewake hook wakes the session when the user writes."
+  },
+  "docs": {
+    "order": 1,
+    "summary": "Install pixling-proxy in Claude Code: what the agent writes shows on the resident as it goes, permission prompts become questions there, and what you write wakes the session."
+  }
+}

@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Built from src/ and committed, because hosts install the plugin straight from git.
+# On a conflict, rebase and run `npm run build` again.
+plugins/pixling-proxy/scripts/*.mjs linguist-generated=true -diff

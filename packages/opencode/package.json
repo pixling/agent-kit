@@ -1,0 +1,34 @@
+{
+  "name": "@pixling/opencode-proxy",
+  "version": "0.1.38",
+  "description": "Talk with OpenCode through a Pixling resident on your Mac desktop: replies show on it, permission prompts become questions on it, and what you write there goes back to OpenCode. Optionally it reacts to each reply and says it aloud.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "pixling"
+  ],
+  "homepage": "https://pixling.app/docs/plugins/opencode/",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixling/agent-kit.git",
+    "directory": "packages/opencode"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "prepack": "cd ../.. && npm run build"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}

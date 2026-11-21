@@ -1,0 +1,26 @@
+{
+  "name": "pixling-agent-kit",
+  "private": true,
+  "description": "Pixling plugins and skills for coding agents.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "vp pack",
+    "check": "vp check && tsc && node scripts/validate.ts",
+    "test": "vp pack && vp test run",
+    "format": "vp fmt",
+    "bump": "node scripts/bump-version.ts",
+    "notices": "node scripts/sync-notices.ts"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.1.2",
+    "@effect/vitest": "4.1.2",
+    "@types/node": "^22.20.5",
+    "effect": "4.1.2",
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.4.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}

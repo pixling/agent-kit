@@ -1,0 +1,39 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "homepage": "https://opencode.ai",
+  "verified": {
+    "version": "2.2.5",
+    "date": "2026-11-05"
+  },
+  "skills": {
+    "install": "npx skills add pixling/agent-kit -a opencode",
+    "paths": [
+      "~/.config/opencode/skills",
+      ".opencode/skills",
+      ".agents/skills",
+      ".claude/skills"
+    ]
+  },
+  "proxy": {
+    "status": "experimental",
+    "kind": "package",
+    "package": "@pixling/opencode-proxy",
+    "install": [
+      "Add \"@pixling/opencode-proxy\" to the \"plugin\" array in opencode.json"
+    ],
+    "toResident": [
+      "text",
+      "reasoning",
+      "tools",
+      "reply",
+      "permission"
+    ],
+    "fromResident": "anytime",
+    "how": "A plugin in the OpenCode process: each text part shows as it ends, session.idle shows the reply, permission events ask on the resident, and what the user writes is sent with session.promptAsync."
+  },
+  "docs": {
+    "order": 3,
+    "summary": "Add @pixling/opencode-proxy to OpenCode: replies show on the resident, and what you write there reaches the session."
+  }
+}
