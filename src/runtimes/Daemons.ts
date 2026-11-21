@@ -7,19 +7,25 @@ import { Context, Effect, Layer } from 'effect';
 import { CurrentSession, ProxyConfig, Receiver, SessionStore } from '../core/services.ts';
 import { log } from './log.ts';
 import { nodeRuntime } from './process.ts';
-import { HUB_LOCK, registerHubEntry, removeHubEntry } from './ReceiverHub.ts';
+import { HUB_LOCK, RECEIVER_HUB_DIR, registerHubEntry, removeHubEntry } from './ReceiverHub.ts';
 import { deskLocks, SessionLocks } from './SessionFiles.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-// A background process, one of each kind per session, held through a session lock.
+// A background process: either per-session (held through a session lock) or shared
+// across every session on this Mac via a desk-scoped hub registry.
 export interface Daemon {
   readonly lock: string;
   readonly script: string;
+  readonly hub?: { readonly dir: string; readonly lock: string };
 }
 
 // Keeps the inbox open so the user can type to the resident.
-export const RECEIVER: Daemon = { lock: 'receiver', script: 'receiver-daemon.mjs' };
+export const RECEIVER: Daemon = {
+  lock: 'receiver',
+  script: 'receiver-daemon.mjs',
+  hub: { dir: RECEIVER_HUB_DIR, lock: HUB_LOCK },
+};
 
 export class Daemons extends Context.Service<
   Daemons,
@@ -51,31 +57,35 @@ const DaemonsOnly = Layer.effect(Daemons)(
     return Daemons.of({
       start: Effect.fn('Daemons.start')(function* (daemon, { hostPid, detached = true, extra = [] }) {
         if (!config.receive || (yield* store.isStowed)) return;
-        if (daemon === RECEIVER) {
-          yield* registerHubEntry({
-            namespace: session.namespace,
-            key: session.key,
-            hostPid: hostPid ?? 0,
-            // Live in-process plugins (`detached: false`) own their own idleCloseMs timers;
-            // hook hosts (`detached: true`) rely on the hub to expire quiet sessions.
-            idleCloseMs: detached ? config.idleCloseMs : 0,
-            registeredAt: Date.now(),
-          });
+        if (daemon.hub) {
+          yield* registerHubEntry(
+            {
+              namespace: session.namespace,
+              key: session.key,
+              hostPid: hostPid ?? 0,
+              // Live in-process plugins (`detached: false`) own their own idleCloseMs timers;
+              // hook hosts (`detached: true`) rely on the hub to expire quiet sessions.
+              idleCloseMs: detached ? config.idleCloseMs : 0,
+              registeredAt: Date.now(),
+              ...(extra.length ? { extra } : {}),
+            },
+            daemon.hub.dir,
+          );
           const hubLocks = deskLocks();
-          if (yield* hubLocks.lock(HUB_LOCK)) {
+          if (yield* hubLocks.lock(daemon.hub.lock)) {
             const child = yield* Effect.sync(() => {
               const child = spawn(nodeRuntime(), [path.join(here, daemon.script), '--hub'], {
                 detached: true,
                 stdio: 'ignore',
                 env: process.env,
               });
-              child.on('error', (e) => log(`receiver hub failed to start: ${e.message}`));
+              child.on('error', (e) => log(`${daemon.hub!.lock} failed to start: ${e.message}`));
               child.unref();
               return child;
             });
-            if (!child.pid) return yield* hubLocks.unlock(HUB_LOCK);
-            yield* hubLocks.handOver(HUB_LOCK, child.pid);
-            yield* Effect.logInfo(`${session.selector} receiver hub started ${child.pid}`);
+            if (!child.pid) return yield* hubLocks.unlock(daemon.hub.lock);
+            yield* hubLocks.handOver(daemon.hub.lock, child.pid);
+            yield* Effect.logInfo(`${session.selector} ${daemon.hub.lock} started ${child.pid}`);
           }
           return;
         }
@@ -96,8 +106,8 @@ const DaemonsOnly = Layer.effect(Daemons)(
         yield* Effect.logInfo(`${session.selector} ${daemon.lock} started ${child.pid} host=${hostPid ?? 0}`);
       }),
       stop: Effect.fn('Daemons.stop')(function* (daemon) {
-        if (daemon === RECEIVER) {
-          yield* removeHubEntry(session.namespace, session.key);
+        if (daemon.hub) {
+          yield* removeHubEntry(session.namespace, session.key, daemon.hub.dir);
         }
         const pid = yield* locks.stopHolder(daemon.lock);
         if (pid) yield* Effect.logInfo(`${session.selector} stopping ${daemon.lock} ${pid}`);

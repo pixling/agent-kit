@@ -12,6 +12,9 @@ const PRIVATE_DIR = 0o700;
 const PRIVATE_FILE = 0o600;
 
 export const HUB_LOCK = 'receiver-hub';
+export const RECEIVER_HUB_DIR = '.receiver-hub';
+export const FORWARDER_HUB_LOCK = 'codex-forwarder-hub';
+export const FORWARDER_HUB_DIR = '.codex-forwarder-hub';
 
 export interface HubEntry {
   readonly namespace: string;
@@ -19,24 +22,25 @@ export interface HubEntry {
   readonly hostPid: number;
   readonly idleCloseMs: number;
   readonly registeredAt: number;
+  readonly extra?: ReadonlyArray<string>;
 }
 
-export const hubEntriesDir = (): string => path.join(cacheBase(), '.receiver-hub', 'entries');
+export const hubEntriesDir = (hubDir: string = RECEIVER_HUB_DIR): string => path.join(cacheBase(), hubDir, 'entries');
 
 export const entryId = (namespace: string, key: string): string =>
   createHash('sha256').update(`${namespace}\0${key}`).digest('hex').slice(0, 24);
 
-const entryFile = (namespace: string, key: string): string =>
-  path.join(hubEntriesDir(), `${entryId(namespace, key)}.json`);
+const entryFile = (namespace: string, key: string, hubDir: string = RECEIVER_HUB_DIR): string =>
+  path.join(hubEntriesDir(hubDir), `${entryId(namespace, key)}.json`);
 
 export const pairKey = (namespace: string, key: string): string => `${namespace}\0${key}`;
 
-export const registerHubEntry = (entry: HubEntry): Effect.Effect<void> =>
+export const registerHubEntry = (entry: HubEntry, hubDir: string = RECEIVER_HUB_DIR): Effect.Effect<void> =>
   Effect.sync(() => {
     try {
-      const dir = hubEntriesDir();
+      const dir = hubEntriesDir(hubDir);
       fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
-      const file = entryFile(entry.namespace, entry.key);
+      const file = entryFile(entry.namespace, entry.key, hubDir);
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(entry), { mode: PRIVATE_FILE });
       fs.renameSync(tmp, file);
@@ -45,17 +49,21 @@ export const registerHubEntry = (entry: HubEntry): Effect.Effect<void> =>
     }
   });
 
-export const removeHubEntry = (namespace: string, key: string): Effect.Effect<void> =>
+export const removeHubEntry = (
+  namespace: string,
+  key: string,
+  hubDir: string = RECEIVER_HUB_DIR,
+): Effect.Effect<void> =>
   Effect.sync(() => {
     try {
-      fs.rmSync(entryFile(namespace, key));
+      fs.rmSync(entryFile(namespace, key, hubDir));
     } catch {
       // Already removed.
     }
   });
 
-export const readHubEntries = (): HubEntry[] => {
-  const dir = hubEntriesDir();
+export const readHubEntries = (hubDir: string = RECEIVER_HUB_DIR): HubEntry[] => {
+  const dir = hubEntriesDir(hubDir);
   let files: string[];
   try {
     files = fs.readdirSync(dir);
@@ -73,6 +81,9 @@ export const readHubEntries = (): HubEntry[] => {
         typeof raw.key === 'string' &&
         raw.key.length > 0
       ) {
+        const extra = Array.isArray(raw.extra)
+          ? raw.extra.filter((v): v is string => typeof v === 'string')
+          : undefined;
         entries.push({
           namespace: raw.namespace,
           key: raw.key,
@@ -80,6 +91,7 @@ export const readHubEntries = (): HubEntry[] => {
           idleCloseMs: typeof raw.idleCloseMs === 'number' && Number.isFinite(raw.idleCloseMs) ? raw.idleCloseMs : 0,
           registeredAt:
             typeof raw.registeredAt === 'number' && Number.isFinite(raw.registeredAt) ? raw.registeredAt : Date.now(),
+          ...(extra && extra.length ? { extra } : {}),
         });
       }
     } catch {

@@ -4,7 +4,8 @@ import { Effect, Layer, Schema } from 'effect';
 import type { Activity } from '../../core/Activity.ts';
 import type { PermissionAnswer } from '../../core/Conversation.ts';
 import { readSettings } from '../../core/config.ts';
-import { Daemons } from '../../runtimes/Daemons.ts';
+import { Daemons, type Daemon } from '../../runtimes/Daemons.ts';
+import { FORWARDER_HUB_DIR, FORWARDER_HUB_LOCK } from '../../runtimes/ReceiverHub.ts';
 import { HookHost, NOTHING } from '../../runtimes/hook/HookHost.ts';
 import { commandLine, findHostPid } from '../../runtimes/process.ts';
 
@@ -50,7 +51,11 @@ export const isExecRun = (commandLine: string): boolean => {
 };
 
 // Hands the user's messages to `codex queue`, which starts a turn in an idle session.
-export const FORWARDER = { lock: 'forwarder', script: 'codex-forwarder.mjs' };
+export const FORWARDER: Daemon = {
+  lock: 'forwarder',
+  script: 'codex-forwarder.mjs',
+  hub: { dir: FORWARDER_HUB_DIR, lock: FORWARDER_HUB_LOCK },
+};
 
 const queueEnabled = () => {
   const env = process.env.PIXLING_PROXY_CODEX_QUEUE;
