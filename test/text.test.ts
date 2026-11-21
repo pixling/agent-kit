@@ -25,6 +25,17 @@ describe('permissionDetail', () => {
 
   test('says so in the language of the card', () => {
     expect(card('x'.repeat(5000), 'ja')).toContain('2000 文字は表示していません');
+    expect(card('x'.repeat(5000), 'zh-Hant')).toContain('2000 個字未顯示');
+    expect(card('x'.repeat(5000), 'ko')).toContain('2000자는 보이지 않아요');
+  });
+
+  test('provides localized permission wording for all four languages', () => {
+    expect(strings('en').permissionQuestion('Bash')).toBe('Allow Bash?');
+    expect(strings('ja').permissionQuestion('Bash')).toBe('Bash を実行していい？');
+    expect(strings('zh-Hant').permissionQuestion('Bash')).toBe('允許執行 Bash 嗎？');
+    expect(strings('ko').permissionQuestion('Bash')).toBe('Bash 실행을 허용할까요?');
+    expect([strings('zh-Hant').allow, strings('zh-Hant').deny]).toEqual(['允許', '拒絕']);
+    expect([strings('ko').allow, strings('ko').deny]).toEqual(['허용', '거부']);
   });
 
   test('a call cannot close the code block around it', () => {

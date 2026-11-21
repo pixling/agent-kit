@@ -101,10 +101,18 @@ describe('a reply as speech', () => {
     ]);
   });
 
-  it('joins lines without a space where the script uses none', () => {
+  it('joins lines without a space where the script uses none, and with a space for Korean', () => {
     assert.deepStrictEqual(partsOf('テストは全部\n通りました。\n- 設定は `voice` に書く\n- 鍵は環境変数'), [
       'テストは全部通りました。',
       '設定は voice に書く。 鍵は環境変数。',
+    ]);
+    assert.deepStrictEqual(partsOf('測試全部\n通過了。\n- 設定寫在 `voice`\n- 金鑰放在環境變數'), [
+      '測試全部通過了。',
+      '設定寫在 voice。 金鑰放在環境變數。',
+    ]);
+    assert.deepStrictEqual(partsOf('테스트가 모두\n통과했어요.\n- 설정은 `voice`에 적어요\n- 키는 환경 변수'), [
+      '테스트가 모두 통과했어요.',
+      '설정은 voice에 적어요. 키는 환경 변수.',
     ]);
   });
 

@@ -35,6 +35,27 @@ const STRINGS: Record<Language, Strings> = {
       `全 ${total} 文字のうち ${hidden} 文字は表示していません。許可する前に、ターミナルで全文を確認してください。`,
     undelivered: 'メッセージはまだエージェントに届いていません。届くまで送り直します。',
   },
+  'zh-Hant': {
+    permissionQuestion: (tool) => `允許執行 ${tool} 嗎？`,
+    permissionDetail: '代理正在等你允許執行這項操作：',
+    allow: '允許',
+    deny: '拒絕',
+    denyNote: '寫下理由來拒絕，並告訴代理改做什麼。',
+    typed: '拒絕並說明',
+    partHidden: (hidden, total) => `全部 ${total} 個字中有 ${hidden} 個字未顯示。允許前請先在終端機確認完整內容。`,
+    undelivered: '你的訊息還沒送到代理那裡。會繼續嘗試傳送。',
+  },
+  ko: {
+    permissionQuestion: (tool) => `${tool} 실행을 허용할까요?`,
+    permissionDetail: '에이전트가 이걸 실행할 권한을 기다리고 있어요:',
+    allow: '허용',
+    deny: '거부',
+    denyNote: '이유를 쓰면 거부하고, 대신 어떻게 할지 에이전트에게 전해요.',
+    typed: '거부하고 전하기',
+    partHidden: (hidden, total) =>
+      `전체 ${total}자 중 ${hidden}자는 보이지 않아요. 허용하기 전에 터미널에서 전체 내용을 확인해 주세요.`,
+    undelivered: '메시지가 아직 에이전트에게 닿지 않았어요. 닿을 때까지 다시 보낼게요.',
+  },
 };
 
 export function strings(language: string): Strings {

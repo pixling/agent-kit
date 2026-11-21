@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 test('with nothing set, the defaults', () => {
-  expect(loadConfig()).toMatchObject({ ...DEFAULTS, language: expect.stringMatching(/^(ja|en)$/) });
+  expect(loadConfig()).toMatchObject({ ...DEFAULTS, language: expect.stringMatching(/^(en|ja|zh-Hant|ko)$/) });
 });
 
 test('takes the settings that are right', () => {
@@ -79,7 +79,27 @@ test.each([
 
 test('a language it does not know falls back to the locale', () => {
   settings({ language: 'fr' });
-  expect(loadConfig().language).toMatch(/^(ja|en)$/);
+  expect(loadConfig().language).toMatch(/^(en|ja|zh-Hant|ko)$/);
+});
+
+test.each([
+  ['en', 'en'],
+  ['ja', 'ja'],
+  ['zh-Hant', 'zh-Hant'],
+  ['zh-hant', 'zh-Hant'],
+  ['ko', 'ko'],
+  ['KO', 'ko'],
+])('language setting %j resolves to %j', (given, expected) => {
+  settings({ language: given });
+  expect(loadConfig().language).toBe(expected);
+});
+
+test('PIXLING_PROXY_LANGUAGE overrides settings and normalizes casing', () => {
+  settings({ language: 'ja' });
+  process.env.PIXLING_PROXY_LANGUAGE = 'zh-hant';
+  expect(loadConfig().language).toBe('zh-Hant');
+  process.env.PIXLING_PROXY_LANGUAGE = 'ko';
+  expect(loadConfig().language).toBe('ko');
 });
 
 test.each([[[]], [null], ['text'], [3]])('a settings file holding %j means defaults', (value) => {
@@ -108,4 +128,23 @@ test('LC_ALL outranks LANG', () => {
   process.env.LC_ALL = 'en_US.UTF-8';
   process.env.LANG = 'ja_JP.UTF-8';
   expect(loadConfig().language).toBe('en');
+});
+
+test.each([
+  ['ja_JP.UTF-8', 'ja'],
+  ['ko_KR.UTF-8', 'ko'],
+  ['zh_TW.UTF-8', 'zh-Hant'],
+  ['zh_HK.UTF-8', 'zh-Hant'],
+  ['zh_MO.UTF-8', 'zh-Hant'],
+  ['zh_Hant_TW.UTF-8', 'zh-Hant'],
+  ['zh-Hant', 'zh-Hant'],
+  ['zh_CN.UTF-8', 'en'],
+  ['zh_Hans_CN.UTF-8', 'en'],
+  ['en_US.UTF-8', 'en'],
+  ['C.UTF-8', 'en'],
+])('locale %s maps to %s', (locale, expected) => {
+  delete process.env.LC_ALL;
+  delete process.env.LC_MESSAGES;
+  process.env.LANG = locale;
+  expect(loadConfig().language).toBe(expected);
 });

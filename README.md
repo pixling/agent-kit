@@ -61,7 +61,7 @@ variables):
 | `permissionWaitMs` | `60000` | How long a permission question waits on the resident before the host asks as usual. `0` turns it off. Hooks are cut at about 85 seconds, so more than that does not help on Claude Code and Codex |
 | `receive` | `true` | Let you type to the resident and relay it to the agent |
 | `unattended` | `false` | Also bind a resident in non-interactive runs (`claude -p`, SDK workers, `codex exec`, `pi -p`, `agy -p`). Off, so workers started by an agent do not fill the desk. Environment: `PIXLING_PROXY_UNATTENDED=1` |
-| `language` | from `LC_ALL`, `LC_MESSAGES` or `LANG` | `ja` or `en`, for the permission question |
+| `language` | from `LC_ALL`, `LC_MESSAGES` or `LANG` | `en`, `ja`, `zh-Hant` or `ko`, for the permission question |
 | `turnEndWaitMs` | `0` | Codex and Antigravity: hold each turn open this long for your answer on the resident. The host ends a hook at its own limit: 600 s on Codex, 3600 s on Antigravity |
 | `idleCloseMs` | 6 hours | pi, OpenCode and dsh: a session with no activity for this long stops listening, and holds no process, until its next activity. Claude Code's wake-up lasts 6 hours too. `0`: never |
 | `codexQueue` | `true` | Codex only: relay your messages into the session with `codex queue`, which wakes an idle TUI session. Off: they arrive with your next prompt |

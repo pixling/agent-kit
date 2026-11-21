@@ -47,7 +47,8 @@ const inline = (line: string): string =>
 const joined = (lines: ReadonlyArray<string>): string =>
   lines.reduce((whole, line) => {
     if (!whole) return line;
-    const spaced = /[\p{sc=Latin}\p{N}.,:;!?)]$/u.test(whole) || /^[\p{sc=Latin}\p{N}(]/u.test(line);
+    const spaced =
+      /[\p{sc=Latin}\p{sc=Hangul}\p{N}.,:;!?)]$/u.test(whole) || /^[\p{sc=Latin}\p{sc=Hangul}\p{N}(]/u.test(line);
     return `${whole}${spaced ? ' ' : ''}${line}`;
   }, '');
 

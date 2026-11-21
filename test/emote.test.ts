@@ -187,6 +187,8 @@ describe('reactions', () => {
     assert.deepStrictEqual(traitsOf(clipsNamed('いきをする')), { pleased: 'idle', downcast: 'idle' });
     assert.deepStrictEqual(traitsOf(clipsNamed('いきをする', 'ダンス')), { pleased: 'm2', downcast: 'idle' });
     assert.deepStrictEqual(traitsOf(clipsNamed('Idle', 'Walk', 'Fluster', 'Jump')), { pleased: 'm4', downcast: 'm3' });
+    assert.deepStrictEqual(traitsOf(clipsNamed('呼吸', '開心跳舞', '難過')), { pleased: 'm2', downcast: 'm3' });
+    assert.deepStrictEqual(traitsOf(clipsNamed('숨쉬기', '춤추기', '시무룩')), { pleased: 'm2', downcast: 'm3' });
     // A name decides before a sentence, where such a word can turn up by the way.
     assert.strictEqual(
       traitsOf([

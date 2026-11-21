@@ -113,8 +113,8 @@ How big the reaction to finished work is follows how weighty the judge finds the
 reply, out of five: up to 2.5 it is quiet (one emoji at a time, shallow squashes),
 from 3.5 it is loud, with an encore when the work is done. Between, how long the
 turn took decides: quiet under 45 seconds, loud from 8 minutes on. A resident with its own
-motions also plays one: a clip named for joy (dance, jump, よろこぶ, ...) faster when
-it is pleased, one named for gloom (droop, fluster, しょんぼり, ...) slower and
+motions also plays one: a clip named for joy (dance, jump, よろこぶ, 開心, 춤, ...) faster when
+it is pleased, one named for gloom (droop, fluster, しょんぼり, 難過, 시무룩, ...) slower and
 greyer when it is not, and its usual motion when no name fits.
 
 A resident the plugin creates starts with **Motion** on, so the turns, shakes,

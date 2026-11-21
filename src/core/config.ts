@@ -5,7 +5,25 @@ import path from 'node:path';
 import { Option, Schema } from 'effect';
 import type { ShowPolicy } from './Activity.ts';
 
-export type Language = 'ja' | 'en';
+export const LANGUAGES = ['en', 'ja', 'zh-Hant', 'ko'] as const;
+export type Language = (typeof LANGUAGES)[number];
+
+const LANGUAGE_BY_LOWER: Readonly<Record<string, Language>> = Object.fromEntries(
+  LANGUAGES.map((lang) => [lang.toLowerCase(), lang]),
+);
+
+// Same rule as the macOS app: Japanese is `ja`, Korean is `ko`, Traditional Chinese
+// (`zh-Hant…`, `zh-TW`, `zh-HK`, `zh-MO`) is `zh-Hant`, and anything else falls back to `en`.
+export function languageFromLocale(locale: string): Language {
+  const base = locale.split(/[.@]/, 1)[0] ?? '';
+  const [primary, secondary] = base.toLowerCase().split(/[-_]/).filter(Boolean);
+  if (primary === 'ja') return 'ja';
+  if (primary === 'ko') return 'ko';
+  if (primary === 'zh' && (secondary === 'hant' || secondary === 'tw' || secondary === 'hk' || secondary === 'mo')) {
+    return 'zh-Hant';
+  }
+  return 'en';
+}
 
 export interface Config {
   // Resident for a new session: a zukan selector (No.N), exact name or id, or a
@@ -69,7 +87,7 @@ const SCHEMAS = {
   turnEndWaitMs: NonNegative,
   idleCloseMs: NonNegative,
   unattended: Schema.Boolean,
-  language: Schema.NullOr(Schema.Literals(['ja', 'en'])),
+  language: Schema.NullOr(Schema.Literals(LANGUAGES)),
 };
 
 const SHOW_SCHEMAS = {
@@ -143,6 +161,10 @@ export function loadConfig(): Config {
     ...(typeof written === 'object' && written !== null ? (written as Record<string, unknown>) : {}),
     ...showFromEnv(env),
   };
+  const rawLanguage = Option.match(Schema.decodeUnknownOption(Schema.String)(raw.language), {
+    onNone: () => raw.language,
+    onSome: (value) => LANGUAGE_BY_LOWER[value.trim().toLowerCase()] ?? value,
+  });
   return {
     asset: setting(raw, 'asset') as Config['asset'],
     show: {
@@ -158,6 +180,8 @@ export function loadConfig(): Config {
     turnEndWaitMs: setting(raw, 'turnEndWaitMs'),
     idleCloseMs: setting(raw, 'idleCloseMs'),
     unattended: setting(raw, 'unattended'),
-    language: setting(raw, 'language') || (/^ja/i.test(env.LC_ALL || env.LC_MESSAGES || env.LANG || '') ? 'ja' : 'en'),
+    language:
+      setting({ language: rawLanguage }, 'language') ||
+      languageFromLocale(env.LC_ALL || env.LC_MESSAGES || env.LANG || ''),
   };
 }

@@ -35,9 +35,9 @@ export const NO_TRAITS: Traits = { pleased: null, downcast: null };
 // Words a maker gives a clip that suits each: a resident with a dance dances when the
 // work is done, instead of breathing faster.
 const JOYFUL =
-  /ダンス|おど[るり]|踊|よろこ|喜|ジャンプ|とびはね|跳|ばんざい|万歳|はしゃ|\b(dance|dancing|jump|hop|cheer|joy|happy|celebrat\w*)\b/i;
+  /ダンス|おど[るり]|踊|よろこ|喜|ジャンプ|とびはね|跳|ばんざい|万歳|はしゃ|跳舞|開心|快樂|高興|歡呼|慶祝|跳躍|蹦跳|雀躍|춤|기쁨|기쁘|행복|신나|환호|축하|점프|뛰|\b(dance|dancing|jump|hop|cheer|joy|happy|celebrat\w*)\b/i;
 const GLUM =
-  /しょんぼり|うなだれ|おちこ|落ち込|かなし|悲|あわて|慌|こま[るり]|困|\b(sad|droop|slump|cry|fluster|panic|worr\w*)\b/i;
+  /しょんぼり|うなだれ|おちこ|落ち込|かなし|悲|あわて|慌|こま[るり]|困|難過|傷心|沮喪|失落|哭|慌張|焦急|擔心|煩惱|슬픔|슬프|우울|시무룩|울|당황|걱정|곤란|\b(sad|droop|slump|cry|fluster|panic|worr\w*)\b/i;
 
 // A clip's name says more than the sentence about it, where such a word can turn up
 // by the way: every name is tried first.
