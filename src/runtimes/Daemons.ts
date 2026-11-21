@@ -7,7 +7,8 @@ import { Context, Effect, Layer } from 'effect';
 import { CurrentSession, ProxyConfig, Receiver, SessionStore } from '../core/services.ts';
 import { log } from './log.ts';
 import { nodeRuntime } from './process.ts';
-import { SessionLocks } from './SessionFiles.ts';
+import { HUB_LOCK, registerHubEntry, removeHubEntry } from './ReceiverHub.ts';
+import { deskLocks, SessionLocks } from './SessionFiles.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,7 +50,36 @@ const DaemonsOnly = Layer.effect(Daemons)(
     const config = yield* ProxyConfig;
     return Daemons.of({
       start: Effect.fn('Daemons.start')(function* (daemon, { hostPid, detached = true, extra = [] }) {
-        if (!config.receive || (yield* store.isStowed) || !(yield* locks.lock(daemon.lock))) return;
+        if (!config.receive || (yield* store.isStowed)) return;
+        if (daemon === RECEIVER) {
+          yield* registerHubEntry({
+            namespace: session.namespace,
+            key: session.key,
+            hostPid: hostPid ?? 0,
+            // Live in-process plugins (`detached: false`) own their own idleCloseMs timers;
+            // hook hosts (`detached: true`) rely on the hub to expire quiet sessions.
+            idleCloseMs: detached ? config.idleCloseMs : 0,
+            registeredAt: Date.now(),
+          });
+          const hubLocks = deskLocks();
+          if (yield* hubLocks.lock(HUB_LOCK)) {
+            const child = yield* Effect.sync(() => {
+              const child = spawn(nodeRuntime(), [path.join(here, daemon.script), '--hub'], {
+                detached: true,
+                stdio: 'ignore',
+                env: process.env,
+              });
+              child.on('error', (e) => log(`receiver hub failed to start: ${e.message}`));
+              child.unref();
+              return child;
+            });
+            if (!child.pid) return yield* hubLocks.unlock(HUB_LOCK);
+            yield* hubLocks.handOver(HUB_LOCK, child.pid);
+            yield* Effect.logInfo(`${session.selector} receiver hub started ${child.pid}`);
+          }
+          return;
+        }
+        if (!(yield* locks.lock(daemon.lock))) return;
         const child = yield* Effect.sync(() => {
           const child = spawn(
             nodeRuntime(),
@@ -66,6 +96,9 @@ const DaemonsOnly = Layer.effect(Daemons)(
         yield* Effect.logInfo(`${session.selector} ${daemon.lock} started ${child.pid} host=${hostPid ?? 0}`);
       }),
       stop: Effect.fn('Daemons.stop')(function* (daemon) {
+        if (daemon === RECEIVER) {
+          yield* removeHubEntry(session.namespace, session.key);
+        }
         const pid = yield* locks.stopHolder(daemon.lock);
         if (pid) yield* Effect.logInfo(`${session.selector} stopping ${daemon.lock} ${pid}`);
       }),

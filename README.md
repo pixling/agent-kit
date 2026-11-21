@@ -63,7 +63,7 @@ variables):
 | `unattended` | `false` | Also bind a resident in non-interactive runs (`claude -p`, SDK workers, `codex exec`, `pi -p`, `agy -p`). Off, so workers started by an agent do not fill the desk. Environment: `PIXLING_PROXY_UNATTENDED=1` |
 | `language` | from `LC_ALL`, `LC_MESSAGES` or `LANG` | `en`, `ja`, `zh-Hant` or `ko`, for the permission question |
 | `turnEndWaitMs` | `0` | Codex and Antigravity: hold each turn open this long for your answer on the resident. The host ends a hook at its own limit: 600 s on Codex, 3600 s on Antigravity |
-| `idleCloseMs` | 6 hours | pi, OpenCode and dsh: a session with no activity for this long stops listening, and holds no process, until its next activity. Claude Code's wake-up lasts 6 hours too. `0`: never |
+| `idleCloseMs` | 6 hours | A session with no activity for this long stops listening until its next activity (the shared receiver hub exits once no active sessions remain). Claude Code's wake-up lasts 6 hours too. `0`: never |
 | `codexQueue` | `true` | Codex only: relay your messages into the session with `codex queue`, which wakes an idle TUI session. Off: they arrive with your next prompt |
 
 A value that does not fit (`"permissionWaitMs": "soon"`) keeps its default.

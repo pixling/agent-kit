@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assetOrder, randomPick } from '../src/core/Conversation.ts';
+import { entryId } from '../src/runtimes/ReceiverHub.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOOK = path.join(root, 'plugins/pixling-proxy/scripts/hook.mjs');
@@ -1032,9 +1033,11 @@ test('a prompt after Pixling came up connects: binds, starts the receiver and sa
   );
   assert.ok(r.calls.some((c) => c[1] === 'ensure'));
   assert.match(r.json.hookSpecificOutput.additionalContext, /A Pixling resident is bound/);
-  const lock = path.join(cache, 'pixling-proxy', 'claude-code', sid, 'receiver.lock');
-  assert.ok(fs.existsSync(lock), 'the receiver holds its lock');
-  process.kill(Number(fs.readFileSync(lock, 'utf8').split(' ')[0]), 'SIGTERM');
+  const hubLock = path.join(cache, 'pixling-proxy', '.desk', 'receiver-hub.lock');
+  const entry = path.join(cache, 'pixling-proxy', '.receiver-hub', 'entries', `${entryId('claude-code', sid)}.json`);
+  assert.ok(fs.existsSync(entry), 'the session is registered in the receiver hub');
+  assert.ok(fs.existsSync(hubLock), 'the shared receiver hub holds its lock');
+  process.kill(Number(fs.readFileSync(hubLock, 'utf8').split(' ')[0]), 'SIGTERM');
 });
 
 test('with Pixling still away, a prompt says nothing', () => {
@@ -1047,12 +1050,14 @@ test("session-end stops the session's receiver and frees its lock", () => {
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-end-'));
   const env = { XDG_CACHE_HOME: cache };
   run('claude-code', 'session-start', { session_id: sid }, { 'resident ensure': ENSURED }, env);
-  const lock = path.join(cache, 'pixling-proxy', 'claude-code', sid, 'receiver.lock');
-  assert.ok(fs.existsSync(lock));
+  const entry = path.join(cache, 'pixling-proxy', '.receiver-hub', 'entries', `${entryId('claude-code', sid)}.json`);
+  const hubLock = path.join(cache, 'pixling-proxy', '.desk', 'receiver-hub.lock');
+  assert.ok(fs.existsSync(entry));
+  assert.ok(fs.existsSync(hubLock));
   const r = run('claude-code', 'session-end', { session_id: sid, reason: 'exit' }, {}, env);
   assert.equal(r.status, 0);
   assert.deepEqual(r.json, {});
-  assert.equal(fs.existsSync(lock), false);
+  assert.equal(fs.existsSync(entry), false);
 });
 
 // A daemon that took its session for gone (host unknown, quiet for hours) ended.
@@ -1060,17 +1065,30 @@ test("a turn's end starts the session's receiver again when it is not running", 
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-again-'));
   const env = { XDG_CACHE_HOME: cache };
   run('claude-code', 'session-start', { session_id: sid }, { 'resident ensure': ENSURED }, env);
-  const lock = path.join(cache, 'pixling-proxy', 'claude-code', sid, 'receiver.lock');
-  const first = Number(fs.readFileSync(lock, 'utf8').split(' ')[0]);
+  const entry = path.join(cache, 'pixling-proxy', '.receiver-hub', 'entries', `${entryId('claude-code', sid)}.json`);
+  const hubLock = path.join(cache, 'pixling-proxy', '.desk', 'receiver-hub.lock');
+  assert.ok(fs.existsSync(entry));
+  const first = Number(fs.readFileSync(hubLock, 'utf8').split(' ')[0]);
   run('claude-code', 'session-end', { session_id: sid, reason: 'other' }, {}, env);
-  assert.equal(fs.existsSync(lock), false);
+  assert.equal(fs.existsSync(entry), false);
+  // Stop the hub so we verify stop restarts it too.
+  try {
+    process.kill(first, 'SIGTERM');
+  } catch {
+    // Already exited.
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && fs.existsSync(hubLock)) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
   run('claude-code', 'stop', { session_id: sid, last_assistant_message: 'Done.' }, {}, env);
-  assert.ok(fs.existsSync(lock), 'the receiver holds its lock again');
-  const again = Number(fs.readFileSync(lock, 'utf8').split(' ')[0]);
+  assert.ok(fs.existsSync(entry), 'the session is registered again');
+  assert.ok(fs.existsSync(hubLock), 'the receiver hub holds its lock again');
+  const again = Number(fs.readFileSync(hubLock, 'utf8').split(' ')[0]);
   assert.notEqual(again, first);
-  // A running one is left alone.
+  // A running hub is reused.
   run('claude-code', 'stop', { session_id: sid, last_assistant_message: 'Done.' }, {}, env);
-  assert.equal(Number(fs.readFileSync(lock, 'utf8').split(' ')[0]), again);
+  assert.equal(Number(fs.readFileSync(hubLock, 'utf8').split(' ')[0]), again);
   process.kill(again, 'SIGTERM');
 });
 

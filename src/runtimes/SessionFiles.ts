@@ -61,7 +61,8 @@ export class SessionLocks extends Context.Service<
   }
 >()('pixling-proxy/runtimes/SessionLocks') {}
 
-const cacheBase = () => path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'pixling-proxy');
+export const cacheBase = () =>
+  path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'pixling-proxy');
 
 const stateDir = (namespace: string, key: string): string => {
   return path.join(cacheBase(), namespace.replace(SAFE, '_'), key.replace(SAFE, '_'));
@@ -272,7 +273,7 @@ export const forgetOldSessions = total('forgetOldSessions', undefined, () => {
   fs.chmodSync(base, PRIVATE_DIR);
   fs.writeFileSync(stamp, '');
   for (const namespace of fs.readdirSync(base, { withFileTypes: true })) {
-    if (!namespace.isDirectory()) continue;
+    if (!namespace.isDirectory() || namespace.name.startsWith('.')) continue;
     const parent = path.join(base, namespace.name);
     for (const key of fs.readdirSync(parent)) {
       const dir = path.join(parent, key);
