@@ -14,8 +14,15 @@ compatibility: macOS with Pixling running, "CLI connection" on, and `pixling` on
 # Pixling
 
 Pixling shows pixel-art residents on the user's Mac. You reach them through the
-`pixling` command. Every call talks to the running app and exits. Add `--json`
-to get one JSON document on stdout, success or failure.
+`pixling` command:
+
+- **Programmatic JSON calls (preferred for agents)**: `pixling call <op> [json | @file | -]`
+  sends any operation directly as JSON (same schema as MCP) and always prints one
+  JSON document on stdout — no `--json` flag needed, and piping via `-` avoids shell
+  escaping and `-`-prefixed Markdown issues. Inspect any operation's schema offline
+  with `pixling schema [op]`, or batch many calls over one connection with `pixling rpc`.
+- **Shorthand subcommands**: commands like `pixling message send` accept `--json`
+  (or `export PIXLING_FORMAT=json`) to print the same JSON envelope on stdout.
 
 ## 1. Check the connection once
 
@@ -92,9 +99,10 @@ Write a question the user can decide from the card alone:
   user leave it unanswered.
 - 2–6 choices. The user can also type an answer: it comes back as
   `selectedChoiceID: free-text` with `enteredText`.
-- When several answers can apply, pass `multiSelect: true`: the user checks any
-  number, then presses Send, and the answer is `selectedChoiceIDs` in choice order
-  (a typed answer's id last) instead of `selectedChoiceID`.
+- When several answers can apply, send `"multiSelect": true` with
+  `pixling call question.ask '{...}'`: the user checks any number, then presses
+  Send, and the answer is `selectedChoiceIDs` in choice order (a typed answer's
+  id last) instead of `selectedChoiceID`.
 
 The result has `state`: `answered` (read `selectedChoiceID` or `selectedChoiceIDs`, and `enteredText`),
 `cancelled`, or `pending` after the wait. For `pending`, wait again:
@@ -137,10 +145,11 @@ pixling --json resident request-close --to "$ME" --author "Codex"
 
 ## Failures
 
-With `--json` a failure is `{"ok":false,"error":{"code","detail","hint"}}`. Follow
-`hint`. Exit codes: `3` cannot connect or busy, `4` target not found, `5`
-refused, `64` usage error. `unknownOperation` means the CLI and app are
-different builds: tell the user to update Pixling.
+`pixling call`, `pixling rpc`, and `--json` / `PIXLING_FORMAT=json` return
+`{"ok":false,"error":{"code","detail","hint"}}` on stdout. Follow `hint`. Exit
+codes: `3` cannot connect or busy, `4` target not found, `5` refused, `64` usage
+error. `unknownOperation` means the CLI and app are different builds: tell the
+user to update Pixling.
 
 ## Defaults
 

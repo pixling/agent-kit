@@ -127,8 +127,10 @@ What each host has to show:
 - `ensure refused rejected clientBindingLimit` in the log: Pixling remembers at most
   4096 session bindings and makes room by forgetting the oldest whose resident is off
   the desk. This means all 4096 residents are on the desk: put some away.
-- The text you send and the tool calls on a permission card travel to the `pixling`
-  command as arguments, so another process of your own user can see them with `ps`.
+- On current Pixling builds, message text and permission card details travel to the
+  `pixling` CLI over stdin (`pixling rpc` / `pixling call`) rather than command-line
+  arguments. Older Pixling builds without `rpc`/`call` fall back to CLI arguments,
+  which another process of your own user can see with `ps`.
 
 ### Uninstall
 

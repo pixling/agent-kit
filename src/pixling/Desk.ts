@@ -1,7 +1,15 @@
 // The anti-corruption layer towards Pixling: the only module that knows the CLI's
 // commands, flags and JSON. Everything past it speaks in Desk's types.
+//
+// Unary operations run over a lazy persistent `pixling rpc --concurrency 16` worker
+// (scoped to this Desk layer) so requests reuse one process and payloads travel over
+// stdin rather than argv. Older Pixling CLIs that exit 64 on `rpc` fall back cleanly
+// to one-shot `pixling call <op> -` (stdin JSON), and if that also exits 64 without
+// a JSON envelope, to the legacy subcommand flags.
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { NodeServices } from '@effect/platform-node';
-import { Context, type Duration, Effect, Layer, Option, Schema } from 'effect';
+import { Context, type Duration, Effect, Layer, Option, Predicate, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/process';
 import { cliPath } from './cli.ts';
 
@@ -33,11 +41,11 @@ export class DeskError extends Schema.TaggedError<DeskError>()('DeskError', {
   }
 }
 
-// The system's code for a CLI that could not be started (ENOENT, EACCES), from the
-// spawner's PlatformError.
+// The system's code for a CLI that could not be started (ENOENT, EACCES), from either
+// Effect's PlatformError or Node's child_process error event.
 const startFailure = (cause: unknown): string | undefined => {
   const reason = (cause as { reason?: { _tag?: unknown; cause?: { code?: unknown } } } | undefined)?.reason;
-  const code = reason?.cause?.code ?? reason?._tag;
+  const code = reason?.cause?.code ?? reason?._tag ?? (cause as { code?: unknown } | undefined)?.code;
   return typeof code === 'string' && /^[A-Za-z]+$/.test(code) ? code : undefined;
 };
 
@@ -195,15 +203,263 @@ const envelope = <S extends Schema.Constraint>(result: S) =>
     }),
   );
 
-// `--name=value`: a separate argument starting with `-` (a reply that is a bullet
-// list) reads as another flag, and the CLI refuses the whole call.
+// Legacy fallback only: `--name=value` avoids ArgumentParser reading a `-`-prefixed
+// argument (such as a Markdown bullet list) as another flag on pre-`call` CLIs.
 const flag = (name: string, value: string | number) => `--${name}=${value}`;
 
 const CALL_TIMEOUT: Duration.Input = '15 seconds';
 // A CLI that ignores being asked to stop must not hold its caller, and so the host.
 const FORCE_KILL_AFTER: Duration.Input = '1 second';
+const FORCE_KILL_MS = 1000;
 // The CLI ends a wait itself; this only catches one that never comes back.
 const WAIT_MARGIN_MS = 10_000;
+const RPC_CONCURRENCY = 16;
+
+class RpcUnsupported extends Schema.TaggedError<RpcUnsupported>()('RpcUnsupported', {}) {}
+class CallUnsupported extends Schema.TaggedError<CallUnsupported>()('CallUnsupported', {}) {}
+
+const decodeEnvelope = <S extends Schema.Decoder<unknown>>(operation: string, line: string, result: S) =>
+  Schema.decodeUnknownEffect(envelope(result))(line).pipe(
+    Effect.mapError((cause) => new DeskError({ operation, reason: 'malformed', cause })),
+    Effect.flatMap((doc) =>
+      doc.ok && doc.result !== undefined
+        ? Effect.succeed(doc.result)
+        : Effect.fail(
+            new DeskError({
+              operation,
+              reason: 'refused',
+              code: doc.error?.code,
+              detail: doc.error?.detail,
+              explanation:
+                [doc.error?.problem, doc.error?.reason, doc.error?.hint]
+                  .filter((words) => typeof words === 'string' && words)
+                  .join('; ') || undefined,
+            }),
+          ),
+    ),
+  );
+
+interface PendingRpc {
+  readonly operation: string;
+  readonly resolve: (line: string) => void;
+  readonly fail: (error: DeskError | RpcUnsupported) => void;
+}
+
+class RpcWorker {
+  readonly bin: string;
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly pending = new Map<number, PendingRpc>();
+  private nextId = 1;
+  private answeredAny = false;
+  private buffer = '';
+  closed = false;
+  private exited = false;
+
+  constructor(bin: string, onExit: (worker: RpcWorker) => void, onUnsupported: (bin: string) => void) {
+    this.bin = bin;
+    const child = spawn(bin, ['rpc', '--concurrency', String(RPC_CONCURRENCY)], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.child = child;
+    child.stdin.on('error', () => {});
+    child.stderr.resume();
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      this.buffer += chunk;
+      let nl = this.buffer.indexOf('\n');
+      while (nl >= 0) {
+        const line = this.buffer.slice(0, nl).trim();
+        this.buffer = this.buffer.slice(nl + 1);
+        if (line) this.handleLine(line);
+        nl = this.buffer.indexOf('\n');
+      }
+    });
+    child.on('error', (cause) => {
+      this.closed = true;
+      this.exited = true;
+      onExit(this);
+      this.failAll((operation) => new DeskError({ operation, reason: 'unreachable', cause }));
+    });
+    child.on('exit', (code) => {
+      this.closed = true;
+      this.exited = true;
+      onExit(this);
+      if (!this.answeredAny && code === 64) {
+        onUnsupported(bin);
+        this.failAll(() => new RpcUnsupported());
+      } else {
+        this.failAll(
+          (operation) =>
+            new DeskError({
+              operation,
+              reason: 'unreachable',
+              cause: new Error(`pixling rpc exited ${code ?? 'signal'}`),
+            }),
+        );
+      }
+    });
+  }
+
+  private handleLine(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!Predicate.isObject(parsed) || typeof parsed.id !== 'number') return;
+    const entry = this.pending.get(parsed.id);
+    if (!entry) return;
+    this.answeredAny = true;
+    this.pending.delete(parsed.id);
+    entry.resolve(line);
+  }
+
+  private failAll(makeError: (operation: string) => DeskError | RpcUnsupported): void {
+    const entries = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of entries) entry.fail(makeError(entry.operation));
+  }
+
+  request(operation: string, args: Record<string, unknown>): Effect.Effect<string, DeskError | RpcUnsupported> {
+    return Effect.callback<string, DeskError | RpcUnsupported>((resume) => {
+      if (this.closed) {
+        resume(Effect.fail(new DeskError({ operation, reason: 'unreachable' })));
+        return;
+      }
+      const id = this.nextId++;
+      this.pending.set(id, {
+        operation,
+        resolve: (line) => resume(Effect.succeed(line)),
+        fail: (error) => resume(Effect.fail(error)),
+      });
+      try {
+        this.child.stdin.write(`${JSON.stringify({ id, op: operation, args })}\n`);
+      } catch (cause) {
+        this.pending.delete(id);
+        resume(Effect.fail(new DeskError({ operation, reason: 'unreachable', cause })));
+        return;
+      }
+      return Effect.sync(() => {
+        this.pending.delete(id);
+      });
+    });
+  }
+
+  get hasAnswered(): boolean {
+    return this.answeredAny;
+  }
+
+  close(force = false): Effect.Effect<void> {
+    return Effect.callback<void>((resume) => {
+      const immediate = force || !this.answeredAny || this.pending.size > 0;
+      this.closed = true;
+      if (this.exited || this.child.exitCode !== null) {
+        resume(Effect.void);
+        return;
+      }
+      let settled = false;
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        for (const t of timers) clearTimeout(t);
+        resume(Effect.void);
+      };
+      this.child.once('exit', finish);
+      this.child.once('error', finish);
+      try {
+        this.child.stdin.end();
+      } catch {}
+      const scheduleKill = (delayMs: number) => {
+        const killTimer = setTimeout(() => {
+          if (this.exited || this.child.exitCode !== null) return finish();
+          try {
+            this.child.kill('SIGKILL');
+          } catch {}
+          const fallback = setTimeout(finish, 200);
+          fallback.unref?.();
+          timers.push(fallback);
+        }, delayMs);
+        killTimer.unref?.();
+        timers.push(killTimer);
+      };
+      if (immediate) {
+        try {
+          this.child.kill('SIGTERM');
+        } catch {}
+        scheduleKill(FORCE_KILL_MS);
+      } else {
+        const termTimer = setTimeout(() => {
+          if (this.exited || this.child.exitCode !== null) return finish();
+          try {
+            this.child.kill('SIGTERM');
+          } catch {}
+          scheduleKill(FORCE_KILL_MS);
+        }, 200);
+        termTimer.unref?.();
+        timers.push(termTimer);
+      }
+    });
+  }
+}
+
+const callOneShot = (
+  bin: string,
+  operation: string,
+  args: Record<string, unknown>,
+): Effect.Effect<string, DeskError | CallUnsupported> =>
+  Effect.callback<string, DeskError | CallUnsupported>((resume) => {
+    const child = spawn(bin, ['call', operation, '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let settled = false;
+    const done = (effect: Effect.Effect<string, DeskError | CallUnsupported>) => {
+      if (settled) return;
+      settled = true;
+      resume(effect);
+    };
+    child.stdin.on('error', () => {});
+    child.stderr.resume();
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.on('error', (cause) => done(Effect.fail(new DeskError({ operation, reason: 'unreachable', cause }))));
+    child.on('exit', (code) => {
+      const line = stdout.trim().split('\n').at(-1) ?? '';
+      if (code === 64) {
+        let hasEnvelope = false;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          hasEnvelope = Predicate.isObject(parsed) && typeof parsed.ok === 'boolean';
+        } catch {}
+        if (!hasEnvelope) {
+          done(Effect.fail(new CallUnsupported()));
+          return;
+        }
+      }
+      done(Effect.succeed(line));
+    });
+    try {
+      child.stdin.end(JSON.stringify(args));
+    } catch (cause) {
+      done(Effect.fail(new DeskError({ operation, reason: 'unreachable', cause })));
+    }
+    return Effect.sync(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      const timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+      }, FORCE_KILL_MS);
+      timer.unref?.();
+      child.once('exit', () => clearTimeout(timer));
+    });
+  });
 
 export class Desk extends Context.Service<
   Desk,
@@ -276,18 +532,40 @@ export class Desk extends Context.Service<
     Desk,
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      let worker: RpcWorker | null = null;
+      const rpcUnsupported = new Set<string>();
+      const callUnsupported = new Set<string>();
 
-      // One invocation, one JSON document on the last line of stdout. A refusal
-      // exits non-zero with its document, so the exit code is not what decides.
-      // The CLI is looked up each time: a long-lived host may outlive an install.
-      const call = <S extends Schema.Decoder<unknown>>(
+      yield* Effect.addFinalizer(() => {
+        const current = worker;
+        worker = null;
+        return current ? current.close() : Effect.void;
+      });
+
+      const getWorker = (bin: string): RpcWorker => {
+        if (worker && worker.bin === bin && !worker.closed) return worker;
+        if (worker) void Effect.runPromise(worker.close());
+        worker = new RpcWorker(
+          bin,
+          (exited) => {
+            if (worker === exited) worker = null;
+          },
+          (unsupportedBin) => {
+            rpcUnsupported.add(unsupportedBin);
+          },
+        );
+        return worker;
+      };
+
+      const callLegacy = <S extends Schema.Decoder<unknown>>(
+        bin: string,
         operation: string,
         args: ReadonlyArray<string>,
         result: S,
         timeout: Duration.Input = CALL_TIMEOUT,
       ) =>
         Effect.suspend(() =>
-          spawner.string(ChildProcess.make(cliPath(), ['--json', ...args], { forceKillAfter: FORCE_KILL_AFTER })),
+          spawner.string(ChildProcess.make(bin, ['--json', ...args], { forceKillAfter: FORCE_KILL_AFTER })),
         ).pipe(
           Effect.mapError((cause) => new DeskError({ operation, reason: 'unreachable', cause })),
           Effect.timeoutOrElse({
@@ -295,28 +573,57 @@ export class Desk extends Context.Service<
             orElse: () => Effect.fail(new DeskError({ operation, reason: 'timedOut' })),
           }),
           Effect.map((stdout) => stdout.trim().split('\n').at(-1) ?? ''),
-          Effect.flatMap((line) =>
-            Schema.decodeUnknownEffect(envelope(result))(line).pipe(
-              Effect.mapError((cause) => new DeskError({ operation, reason: 'malformed', cause })),
-            ),
-          ),
-          Effect.flatMap((doc) =>
-            doc.ok && doc.result !== undefined
-              ? Effect.succeed(doc.result)
-              : Effect.fail(
-                  new DeskError({
-                    operation,
-                    reason: 'refused',
-                    code: doc.error?.code,
-                    detail: doc.error?.detail,
-                    explanation:
-                      [doc.error?.problem, doc.error?.reason, doc.error?.hint]
-                        .filter((words) => typeof words === 'string' && words)
-                        .join('; ') || undefined,
-                  }),
-                ),
-          ),
+          Effect.flatMap((line) => decodeEnvelope(operation, line, result)),
         );
+
+      const callViaCall = <S extends Schema.Decoder<unknown>>(
+        bin: string,
+        operation: string,
+        payload: Record<string, unknown>,
+        legacyArgs: ReadonlyArray<string>,
+        result: S,
+        timeout: Duration.Input,
+      ): Effect.Effect<S['Type'], DeskError> => {
+        if (callUnsupported.has(bin)) return callLegacy(bin, operation, legacyArgs, result, timeout);
+        return callOneShot(bin, operation, payload).pipe(
+          Effect.timeoutOrElse({
+            duration: timeout,
+            orElse: () => Effect.fail(new DeskError({ operation, reason: 'timedOut' })),
+          }),
+          Effect.flatMap((line) => decodeEnvelope(operation, line, result)),
+          Effect.catchTag('CallUnsupported', () => {
+            callUnsupported.add(bin);
+            return callLegacy(bin, operation, legacyArgs, result, timeout);
+          }),
+        );
+      };
+
+      // The CLI is looked up each time: a long-lived host may outlive an install.
+      // Unary ops share one persistent `pixling rpc` worker; older CLIs fall back
+      // transparently to `pixling call <op> -` and then legacy subcommands.
+      const call = <S extends Schema.Decoder<unknown>>(
+        operation: string,
+        payload: Record<string, unknown>,
+        legacyArgs: ReadonlyArray<string>,
+        result: S,
+        timeout: Duration.Input = CALL_TIMEOUT,
+      ): Effect.Effect<S['Type'], DeskError> =>
+        Effect.suspend(() => {
+          const bin = cliPath();
+          if (rpcUnsupported.has(bin)) return callViaCall(bin, operation, payload, legacyArgs, result, timeout);
+          const current = getWorker(bin);
+          return current.request(operation, payload).pipe(
+            Effect.timeoutOrElse({
+              duration: timeout,
+              orElse: () =>
+                (current.hasAnswered ? Effect.void : current.close(true)).pipe(
+                  Effect.andThen(Effect.fail(new DeskError({ operation, reason: 'timedOut' }))),
+                ),
+            }),
+            Effect.flatMap((line) => decodeEnvelope(operation, line, result)),
+            Effect.catchTag('RpcUnsupported', () => callViaCall(bin, operation, payload, legacyArgs, result, timeout)),
+          );
+        });
 
       const inbox = ({ namespace, key }: Pair) => [flag('namespace', namespace), flag('key', key)];
 
@@ -324,6 +631,12 @@ export class Desk extends Context.Service<
         ensure: (pair, resident) =>
           call(
             'resident.ensure',
+            {
+              namespace: pair.namespace,
+              key: pair.key,
+              ...(resident ? { assetID: resident.assetID, name: resident.name } : {}),
+              ...(resident?.initial ? { initial: { settings: resident.initial } } : {}),
+            },
             [
               'resident',
               'ensure',
@@ -340,6 +653,7 @@ export class Desk extends Context.Service<
             for (let page = 0; page < ZUKAN_MAX_PAGES && offset != null; page++) {
               const doc: typeof ZukanPage.Type = yield* call(
                 'zukan.list',
+                { limit: ZUKAN_PAGE, offset },
                 ['zukan', flag('limit', ZUKAN_PAGE), flag('offset', offset)],
                 ZukanPage,
               );
@@ -351,6 +665,13 @@ export class Desk extends Context.Service<
         send: ({ to, author, text, requestID, still }) =>
           call(
             'message.send',
+            {
+              to,
+              author,
+              text,
+              ...(requestID ? { requestID } : {}),
+              ...(still ? { action: 'none' } : {}),
+            },
             [
               'message',
               'send',
@@ -370,6 +691,12 @@ export class Desk extends Context.Service<
         sequence: (run) =>
           call(
             'sequence.start',
+            {
+              schemaVersion: 1,
+              requestID: `proxy-${randomUUID()}`,
+              to: run.to,
+              ...('steps' in run ? { steps: run.steps } : { name: run.name }),
+            },
             [
               'sequence',
               'start',
@@ -379,11 +706,11 @@ export class Desk extends Context.Service<
             Schema.Unknown,
           ).pipe(Effect.asVoid),
         savedSequences: (to) =>
-          call('sequence.list', ['sequence', 'list', flag('to', to)], SavedList).pipe(
+          call('sequence.list', { to }, ['sequence', 'list', flag('to', to)], SavedList).pipe(
             Effect.map(({ sequences }) => (sequences ?? []).map(({ name }) => name)),
           ),
         traits: (to) =>
-          call('resident.describe', ['resident', 'describe', flag('to', to)], Described).pipe(
+          call('resident.describe', { to }, ['resident', 'describe', flag('to', to)], Described).pipe(
             Effect.map(({ resident, settings, options, sequence }) => ({
               speak: Option.getOrElse(decodeSpeak(settings?.hooks?.speak?.effective), () => DEFAULT_SPEAK),
               clips: (sequence?.animations ?? []).map(({ id, name, motion }) => ({
@@ -400,18 +727,30 @@ export class Desk extends Context.Service<
         emote: ({ to, text, count }) =>
           call(
             'resident.emote',
+            { to, text, ...(count ? { count } : {}) },
             ['resident', 'emote', flag('to', to), flag('text', text), ...(count ? [flag('count', count)] : [])],
             Schema.Unknown,
           ).pipe(Effect.asVoid),
         status: (state) =>
           call(
             'resident.status',
+            { to: state.to, ...('name' in state ? { name: state.name } : { clear: true }) },
             ['resident', 'status', flag('to', state.to), 'name' in state ? flag('name', state.name) : '--clear'],
             Schema.Unknown,
           ).pipe(Effect.asVoid),
         ask: ({ to, author, question, detail, choices, freeText, status }) =>
           call(
             'question.ask',
+            {
+              to,
+              author,
+              question,
+              detail,
+              choices: choices.map(({ id, label }) => ({ id, label })),
+              freeText: { id: freeText.id, label: freeText.label },
+              ...(status ? { status } : {}),
+              waitMs: 0,
+            },
             [
               'question',
               'ask',
@@ -430,12 +769,13 @@ export class Desk extends Context.Service<
         questionResult: (promptID, waitMs) =>
           call(
             'question.result',
+            { promptID, waitMs },
             ['question', 'result', promptID, flag('wait-ms', waitMs)],
             QuestionDoc,
             waitMs + WAIT_MARGIN_MS,
           ).pipe(Effect.map((doc) => doc.question ?? GONE)),
         cancelQuestion: (promptID) =>
-          call('question.cancel', ['question', 'cancel', promptID], QuestionDoc).pipe(
+          call('question.cancel', { promptID }, ['question', 'cancel', promptID], QuestionDoc).pipe(
             Effect.map((doc) => doc.question ?? GONE),
             // Already answered, or withdrawn elsewhere.
             Effect.catchIf(
@@ -444,16 +784,28 @@ export class Desk extends Context.Service<
             ),
           ),
         unread: (pair) =>
-          call('inbox.watch', ['inbox', 'watch', ...inbox(pair), flag('wait-ms', 0)], Unread).pipe(
-            Effect.map((unread) => unread.messages ?? []),
-          ),
-        read: (pair, messageID) => call('inbox.read', ['inbox', 'read', ...inbox(pair), messageID], InboxEntry),
-        wait: (pair, { since, timeoutMs }) =>
           call(
-            'inbox.wait',
-            ['inbox', 'wait', ...inbox(pair), flag('since', since), flag('timeout-ms', timeoutMs)],
+            'inbox.watch',
+            { namespace: pair.namespace, key: pair.key, waitMs: 0 },
+            ['inbox', 'watch', ...inbox(pair), flag('wait-ms', 0)],
             Unread,
-            timeoutMs + WAIT_MARGIN_MS,
+          ).pipe(Effect.map((unread) => unread.messages ?? [])),
+        read: (pair, messageID) =>
+          call(
+            'inbox.read',
+            { namespace: pair.namespace, key: pair.key, messageID },
+            ['inbox', 'read', ...inbox(pair), messageID],
+            InboxEntry,
+          ),
+        wait: (pair, { since, timeoutMs }) =>
+          Effect.suspend(() =>
+            callLegacy(
+              cliPath(),
+              'inbox.wait',
+              ['inbox', 'wait', ...inbox(pair), flag('since', since), flag('timeout-ms', timeoutMs)],
+              Unread,
+              timeoutMs + WAIT_MARGIN_MS,
+            ),
           ).pipe(Effect.map((unread) => (unread.messages ?? []).length > 0)),
         hold: (pair) =>
           spawner

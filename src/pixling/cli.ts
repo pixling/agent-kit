@@ -5,6 +5,7 @@ import path from 'node:path';
 
 const CANDIDATES = [
   path.join(os.homedir(), '.local/bin/pixling'),
+  '/Applications/Pixling.app/Contents/Helpers/PixlingCLI.app/Contents/MacOS/pixling',
   '/Applications/Pixling.app/Contents/MacOS/pixling',
   '/opt/homebrew/bin/pixling',
   '/usr/local/bin/pixling',

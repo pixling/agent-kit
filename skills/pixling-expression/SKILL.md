@@ -88,7 +88,10 @@ pixling --json sequence start --to "$ME" --commit restore --dry-run --steps '[
 - `turn` is relative to the previous cut: undo every tilt with its opposite.
 - A refusal names the step (`at steps[2]…`) and the reason on the next line.
 
-Run `pixling sequence start --help` for every field.
+Run `pixling schema sequence.start` or `pixling sequence start --help` for every
+field. Complex JSON payloads (including full `resident.set` appearance fields,
+groups, or relations) can also be sent directly with `pixling call <op> '{...}'`
+or piped to `pixling call <op> -`.
 
 ## Saved changes
 
