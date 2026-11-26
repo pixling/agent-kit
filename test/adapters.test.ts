@@ -4,7 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { assert, describe, it } from '@effect/vitest';
 import { Effect, type Layer } from 'effect';
-import { Antigravity, MAX_HOLD_MS, readStepEndedReply, resolveHoldMs } from '../src/adapters/antigravity/index.ts';
+import {
+  Antigravity,
+  hasPendingSubagent,
+  isSubagentSession,
+  MAX_HOLD_MS,
+  readStepEndedReply,
+  resolveHoldMs,
+} from '../src/adapters/antigravity/index.ts';
 import { DEFAULTS } from '../src/core/config.ts';
 import { ClaudeCode } from '../src/adapters/claude-code/index.ts';
 import { Codex, isExecRun } from '../src/adapters/codex/index.ts';
@@ -190,6 +197,65 @@ describe('Antigravity', () => {
       fs.appendFileSync(file, JSON.stringify({ type: 'GENERIC', source: 'MODEL', content: 'ok' }) + '\n');
       assert.strictEqual(readStepEndedReply(file), null);
       assert.strictEqual(readStepEndedReply(null), null);
+    }),
+  );
+
+  it.effect('identifies subagent conversations and avoids holding while a subagent is pending', () =>
+    Effect.sync(() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-sub-'));
+      const subTranscript = path.join(dir, 'sub.jsonl');
+      fs.writeFileSync(
+        subTranscript,
+        JSON.stringify({ type: 'SYSTEM_MESSAGE', source: 'SYSTEM', content: '[Message] sender=parent-1 content=hi' }) +
+          '\n',
+      );
+      const userTranscript = path.join(dir, 'user.jsonl');
+      fs.writeFileSync(
+        userTranscript,
+        JSON.stringify({ type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'hi' }) + '\n',
+      );
+
+      assert.isTrue(isSubagentSession('', subTranscript));
+      assert.isTrue(isSubagentSession('', null));
+      assert.isFalse(isSubagentSession('hello', subTranscript));
+      assert.isFalse(isSubagentSession('', userTranscript));
+      assert.isFalse(isSubagentSession(undefined, null));
+
+      const parentTranscript = path.join(dir, 'parent.jsonl');
+      fs.writeFileSync(
+        parentTranscript,
+        [
+          JSON.stringify({ type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'check' }),
+          JSON.stringify({
+            type: 'PLANNER_RESPONSE',
+            source: 'MODEL',
+            content: '',
+            tool_calls: [{ name: 'invoke_subagent' }],
+          }),
+          JSON.stringify({
+            type: 'GENERIC',
+            source: 'MODEL',
+            content: 'Created the following subagent:\n{\n  "conversationId": "sub-1"\n}',
+          }),
+          JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Waiting...' }),
+        ].join('\n') + '\n',
+      );
+      assert.isTrue(hasPendingSubagent(parentTranscript));
+      assert.strictEqual(readStepEndedReply(parentTranscript), null);
+
+      fs.appendFileSync(
+        parentTranscript,
+        [
+          JSON.stringify({
+            type: 'SYSTEM_MESSAGE',
+            source: 'SYSTEM',
+            content: '[Message] timestamp=2026-11-26T10:00:00Z sender=sub-1 priority=MESSAGE_PRIORITY_HIGH content=ok',
+          }),
+          JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Done.' }),
+        ].join('\n') + '\n',
+      );
+      assert.isFalse(hasPendingSubagent(parentTranscript));
+      assert.deepStrictEqual(readStepEndedReply(parentTranscript), { text: 'Done.' });
     }),
   );
 

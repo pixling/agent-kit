@@ -306,6 +306,8 @@ export const handleEvent = Effect.fn('hook.event')(function* (
   const config = yield* ProxyConfig;
   const input: HookInput =
     event === 'before-tool-now' ? yield* Schema.decodeUnknownEffect(BeforeToolNow)(raw) : yield* host.payload(raw);
+  // A subagent belongs to its parent's work: never bind a resident or hold its turn open.
+  if (input.inSubagent) return yield* idle(event);
   // A worker started in a one-shot run is not a conversation with the user.
   const unattended = yield* host.unattended;
   if (unattended && !config.unattended) return yield* idle(event);
