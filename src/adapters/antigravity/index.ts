@@ -12,6 +12,7 @@
 // 10-continuation cap. Once Antigravity CLI supports native turn-start / async
 // wake-up, replace `holdAtStepEnd` / `stepEndedReply` / `continueStep` with it.
 import fs from 'node:fs';
+import path from 'node:path';
 import { Effect, Layer, Schema } from 'effect';
 import { type Config, readSettings } from '../../core/config.ts';
 import { HookHost, NOTHING } from '../../runtimes/hook/HookHost.ts';
@@ -34,29 +35,6 @@ const StepHead = Schema.Struct({
 });
 const decodeStepHead = Schema.decodeUnknownOption(StepHead);
 
-const TranscriptStep = Schema.Struct({
-  type: Schema.String,
-  source: Text,
-  content: Text,
-  tool_calls: Schema.optional(
-    Schema.NullOr(
-      Schema.Array(
-        Schema.Struct({
-          name: Text,
-          args: Schema.optional(Schema.Unknown),
-        }),
-      ),
-    ),
-  ),
-});
-const decodeTranscriptStep = Schema.decodeUnknownOption(TranscriptStep);
-
-const KillArgs = Schema.Struct({
-  Action: Text,
-  ConversationIds: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-});
-const decodeKillArgs = Schema.decodeUnknownOption(KillArgs);
-
 // The model's reasoning, and its text before its tool calls, or its reply.
 const Line = Schema.Struct({
   type: Schema.Literal('PLANNER_RESPONSE'),
@@ -73,8 +51,8 @@ const PRINT_RUN = /^\S*agy(\s.*)?\s(-p|--print|--prompt)(\s|=|$)/;
 export const MAX_HOLD_MS = 59 * 60 * 1000;
 const TAIL_BYTES = 256 * 1024;
 const HEAD_BYTES = 16 * 1024;
-const SUBAGENT_CREATED = /Created the following subagent:\s*\{[\s\S]*?"conversationId"\s*:\s*"([^"]+)"/g;
-const MESSAGE_SENDER = /\[Message\][^\n]*\bsender=([^\s]+)/g;
+// Fallback poll only when fs.watch cannot attach (e.g. EMFILE).
+const WATCH_FALLBACK_MS = 2000;
 
 const parseJson = (text: string): unknown => {
   try {
@@ -144,47 +122,137 @@ export const isSubagentSession = (
   return lastUserInput === '';
 };
 
-// True when the parent session spawned a subagent that has neither sent a message back
-// nor been killed yet, so PostInvocation must not block waiting for resident input.
-export const hasPendingSubagent = (file: string): boolean => {
-  let content: string;
+// Antigravity writes every reactive wake-up (background task completions, subagent
+// replies, scheduled timers, and queued terminal prompts) into
+// `<session>/.system_generated/messages/undelivered/` beside `logs/transcript.jsonl`.
+export const undeliveredDirOf = (transcriptPath: string | null | undefined): string | null => {
+  if (!transcriptPath) return null;
+  const logsDir = path.dirname(transcriptPath);
+  if (path.basename(logsDir) !== 'logs') return null;
+  return path.join(path.dirname(logsDir), 'messages', 'undelivered');
+};
+
+const dirId = (dir: string): string | null => {
   try {
-    content = fs.readFileSync(file, 'utf8');
+    const s = fs.statSync(dir);
+    return s.isDirectory() ? `${s.dev}:${s.ino}` : null;
+  } catch {
+    return null;
+  }
+};
+
+export const hasUndeliveredMessages = (dir: string): boolean => {
+  try {
+    return fs.readdirSync(dir).some((name) => !name.startsWith('.'));
   } catch {
     return false;
   }
-  if (!content.includes('Created the following subagent:')) return false;
-  const pending = new Set<string>();
-  for (const rawLine of content.split('\n')) {
-    if (!rawLine.trim()) continue;
-    const step = decodeTranscriptStep(parseJson(rawLine));
-    if (step._tag === 'None') continue;
-    const { type, content: body, tool_calls: toolCalls } = step.value;
-    if (type === 'GENERIC' && body && body.includes('Created the following subagent:')) {
-      for (const m of body.matchAll(SUBAGENT_CREATED)) {
-        if (m[1]) pending.add(m[1]);
+};
+
+// Completes as soon as Antigravity queues an undelivered message for this session
+// (immediately if one is already waiting). Watches the deepest existing ancestor when
+// `messages/undelivered` has not been created yet, re-attaching if a directory is
+// replaced (inode change) and keeping idle CPU at zero.
+export const watchUndelivered = (transcriptPath: string | null | undefined): Effect.Effect<void> => {
+  const undeliveredDir = undeliveredDirOf(transcriptPath);
+  if (!undeliveredDir) return Effect.never;
+  const messagesDir = path.dirname(undeliveredDir);
+  const systemDir = path.dirname(messagesDir);
+  return Effect.callback<void>((resume) => {
+    let done = false;
+    let watcher: fs.FSWatcher | null = null;
+    let watchedPath: string | null = null;
+    let watchedId: string | null = null;
+    let fallbackTimer: ReturnType<typeof setInterval> | null = null;
+
+    const closeWatcher = () => {
+      watcher?.close();
+      watcher = null;
+      watchedPath = null;
+      watchedId = null;
+    };
+
+    const closeAll = () => {
+      closeWatcher();
+      if (fallbackTimer) {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
       }
-    } else if (type === 'SYSTEM_MESSAGE' && body) {
-      for (const m of body.matchAll(MESSAGE_SENDER)) {
-        if (m[1]) pending.delete(m[1]);
+    };
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      closeAll();
+      resume(Effect.void);
+    };
+
+    const startFallback = () => {
+      if (fallbackTimer || done) return;
+      fallbackTimer = setInterval(() => {
+        if (hasUndeliveredMessages(undeliveredDir)) finish();
+      }, WATCH_FALLBACK_MS);
+    };
+
+    const deepestExisting = (): { readonly dir: string; readonly id: string } | null => {
+      for (const dir of [undeliveredDir, messagesDir, systemDir]) {
+        const id = dirId(dir);
+        if (id) return { dir, id };
       }
-    } else if (type === 'PLANNER_RESPONSE' && toolCalls) {
-      for (const tc of toolCalls) {
-        if (tc.name?.trim() !== 'manage_subagents') continue;
-        const args = decodeKillArgs(tc.args);
-        if (args._tag === 'None') continue;
-        if (args.value.Action === 'kill_all') pending.clear();
-        else if (args.value.Action === 'kill') {
-          for (const id of args.value.ConversationIds ?? []) pending.delete(id);
+      return null;
+    };
+
+    const rearm = () => {
+      if (done) return;
+      if (hasUndeliveredMessages(undeliveredDir)) {
+        finish();
+        return;
+      }
+      const next = deepestExisting();
+      if (!next) {
+        closeWatcher();
+        startFallback();
+        return;
+      }
+      if (next.dir !== watchedPath || next.id !== watchedId) {
+        closeWatcher();
+        try {
+          const attachedDir = next.dir;
+          const attachedId = next.id;
+          watcher = fs.watch(attachedDir, () => rearm());
+          watcher.on('error', () => {
+            closeWatcher();
+            if (dirId(attachedDir) === attachedId) startFallback();
+            else rearm();
+          });
+          watchedPath = attachedDir;
+          watchedId = attachedId;
+        } catch {
+          startFallback();
+          return;
         }
       }
-    }
-  }
-  return pending.size > 0;
+      // Close the race window between attaching the watcher and files/directories changing.
+      if (hasUndeliveredMessages(undeliveredDir)) {
+        finish();
+        return;
+      }
+      const after = deepestExisting();
+      if (after && (after.dir !== watchedPath || after.id !== watchedId)) {
+        rearm();
+      }
+    };
+
+    rearm();
+    return Effect.sync(() => {
+      done = true;
+      closeAll();
+    });
+  });
 };
 
 // Reads the last transcript entry. Returns the reply when the model ended its step
-// without tool calls, or null while tool calls or subagents are still in flight.
+// without tool calls, or null while tool calls are still in flight.
 export const readStepEndedReply = (file: string | null | undefined): { readonly text: string | null } | null => {
   if (!file) return null;
   let tail: string;
@@ -215,7 +283,6 @@ export const readStepEndedReply = (file: string | null | undefined): { readonly 
   const line = decodeLine(row);
   if (line._tag === 'None') return null;
   if (line.value.tool_calls && line.value.tool_calls.length > 0) return null;
-  if (hasPendingSubagent(file)) return null;
   return { text: line.value.content ?? null };
 };
 
@@ -274,6 +341,7 @@ export const Antigravity = Layer.succeed(HookHost)(
         injectSteps: [{ userMessage: text }],
       },
     }),
+    waitInterrupted: (input) => watchUndelivered(input.transcriptPath),
     // A decision is required, and no answer denies the call: `ask` is agy's usual
     // check (it runs at once when the user already allowed it, or never needs asking).
     passTool: { stdout: { decision: 'ask' } },

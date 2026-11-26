@@ -61,6 +61,9 @@ export class HookHost extends Context.Service<
       | ((transcriptPath: string | null | undefined) => { readonly text: string | null } | null)
       | undefined;
     readonly continueStep?: ((text: string) => HookOutput) | undefined;
+    // Ends step-end waiting early when the host has pending local work or input
+    // (background task completions, subagent replies, timers, or queued terminal prompts).
+    readonly waitInterrupted?: ((input: HookInput) => Effect.Effect<void>) | undefined;
     // What a hook before a tool call answers to leave the call to the host's own checks.
     readonly passTool: HookOutput;
     permission(answer: PermissionAnswer): HookOutput;

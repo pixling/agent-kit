@@ -485,17 +485,63 @@ export const takeUserMessages = Effect.fn('takeUserMessages')(function* (
   ];
 });
 
-// Blocks until the user writes or `timeoutMs` passes. Empty when nothing came or
-// the desk cannot be reached. Interrupting ends the wait and its process.
-export const waitForUser = Effect.fn('waitForUser')(function* (timeoutMs: number) {
+// Blocks until the user writes, `timeoutMs` passes, or `until` completes. Only the
+// blocking wait is raced against `until`: once a message arrives, `takeUserMessages`
+// runs to completion so nothing read from the inbox is dropped. Interrupting ends
+// the wait and its process.
+export const waitForUser = Effect.fn('waitForUser')(function* <R = never>(
+  timeoutMs: number,
+  until?: Effect.Effect<void, never, R>,
+) {
   const session = yield* CurrentSession;
   const store = yield* SessionStore;
   const desk = yield* Desk;
   const since = yield* store.since;
-  const arrived = yield* desk
-    .wait(session, { since, timeoutMs })
-    .pipe(Effect.catchTag('DeskError', () => Effect.succeed(false)));
+  const wait = desk.wait(session, { since, timeoutMs }).pipe(Effect.catchTag('DeskError', () => Effect.succeed(false)));
+  const arrived = yield* until ? until.pipe(Effect.as(false), Effect.raceFirst(wait)) : wait;
   return arrived ? yield* takeUserMessages() : [];
+});
+
+const DESK_CHECK_MS = 30_000;
+
+// True when the bound resident is currently reachable and on the desk (without creating
+// or summoning one). A stowed resident is remembered and its receiver stopped so the
+// session stays quiet.
+export const residentOnDesk = Effect.fn('residentOnDesk')(function* (): Effect.fn.Return<
+  boolean,
+  never,
+  CurrentSession | SessionStore | Desk | Receiver
+> {
+  const session = yield* CurrentSession;
+  const store = yield* SessionStore;
+  if (yield* store.isStowed) return false;
+  const desk = yield* Desk;
+  const state = yield* desk
+    .ensure(session)
+    .pipe(
+      Effect.catchTag('DeskError', (error) =>
+        Effect.logInfo(`${session.selector} check ${error.summary}`).pipe(Effect.as(null)),
+      ),
+    );
+  if (state === 'stowed') {
+    const receiver = yield* Receiver;
+    yield* Effect.logInfo(`${session.selector} stowed on desk`);
+    yield* store.markStowed;
+    yield* receiver.stop;
+    return false;
+  }
+  return state === 'onDesk';
+});
+
+// Ends once the resident is stowed, unbound, or the desk is no longer reachable.
+export const residentDisconnected = Effect.fn('residentDisconnected')(function* (
+  checkEveryMs: number = DESK_CHECK_MS,
+): Effect.fn.Return<void, never, CurrentSession | SessionStore | Desk | Receiver> {
+  const interval = Math.max(10, checkEveryMs);
+  for (;;) {
+    yield* Effect.sleep(interval);
+    if (!(yield* residentOnDesk())) return;
+  }
 });
 
 // Hands every batch the user writes to `deliver`, until interrupted or the resident

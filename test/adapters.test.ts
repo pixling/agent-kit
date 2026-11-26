@@ -3,14 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assert, describe, it } from '@effect/vitest';
-import { Effect, type Layer } from 'effect';
+import { Effect, type Layer, Option } from 'effect';
 import {
   Antigravity,
-  hasPendingSubagent,
+  hasUndeliveredMessages,
   isSubagentSession,
   MAX_HOLD_MS,
   readStepEndedReply,
   resolveHoldMs,
+  undeliveredDirOf,
+  watchUndelivered,
 } from '../src/adapters/antigravity/index.ts';
 import { DEFAULTS } from '../src/core/config.ts';
 import { ClaudeCode } from '../src/adapters/claude-code/index.ts';
@@ -200,7 +202,7 @@ describe('Antigravity', () => {
     }),
   );
 
-  it.effect('identifies subagent conversations and avoids holding while a subagent is pending', () =>
+  it.effect('identifies subagent conversations from payload and transcript head', () =>
     Effect.sync(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-sub-'));
       const subTranscript = path.join(dir, 'sub.jsonl');
@@ -220,43 +222,61 @@ describe('Antigravity', () => {
       assert.isFalse(isSubagentSession('hello', subTranscript));
       assert.isFalse(isSubagentSession('', userTranscript));
       assert.isFalse(isSubagentSession(undefined, null));
-
-      const parentTranscript = path.join(dir, 'parent.jsonl');
-      fs.writeFileSync(
-        parentTranscript,
-        [
-          JSON.stringify({ type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'check' }),
-          JSON.stringify({
-            type: 'PLANNER_RESPONSE',
-            source: 'MODEL',
-            content: '',
-            tool_calls: [{ name: 'invoke_subagent' }],
-          }),
-          JSON.stringify({
-            type: 'GENERIC',
-            source: 'MODEL',
-            content: 'Created the following subagent:\n{\n  "conversationId": "sub-1"\n}',
-          }),
-          JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Waiting...' }),
-        ].join('\n') + '\n',
-      );
-      assert.isTrue(hasPendingSubagent(parentTranscript));
-      assert.strictEqual(readStepEndedReply(parentTranscript), null);
-
-      fs.appendFileSync(
-        parentTranscript,
-        [
-          JSON.stringify({
-            type: 'SYSTEM_MESSAGE',
-            source: 'SYSTEM',
-            content: '[Message] timestamp=2026-11-26T10:00:00Z sender=sub-1 priority=MESSAGE_PRIORITY_HIGH content=ok',
-          }),
-          JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Done.' }),
-        ].join('\n') + '\n',
-      );
-      assert.isFalse(hasPendingSubagent(parentTranscript));
-      assert.deepStrictEqual(readStepEndedReply(parentTranscript), { text: 'Done.' });
     }),
+  );
+
+  it.live(
+    'resolves undelivered directory and wakes when messages arrive (including dir creation and replacement)',
+    () =>
+      Effect.gen(function* () {
+        const sysDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-undelivered-'));
+        const logsDir = path.join(sysDir, 'logs');
+        fs.mkdirSync(logsDir, { recursive: true });
+        const transcript = path.join(logsDir, 'transcript.jsonl');
+        fs.writeFileSync(transcript, '');
+
+        const undelivered = undeliveredDirOf(transcript);
+        assert.strictEqual(undelivered, path.join(sysDir, 'messages', 'undelivered'));
+        assert.strictEqual(undeliveredDirOf(path.join(sysDir, 'transcript.jsonl')), null);
+        assert.strictEqual(undeliveredDirOf(null), null);
+        assert.isFalse(hasUndeliveredMessages(undelivered!));
+
+        // Watch starting before `messages/` exists; creating `messages/undelivered/<id>` wakes it.
+        const createTimer = setTimeout(() => {
+          fs.mkdirSync(undelivered!, { recursive: true });
+          fs.writeFileSync(path.join(undelivered!, '.DS_Store'), '');
+          fs.writeFileSync(path.join(undelivered!, 'msg-1'), '');
+        }, 40);
+        try {
+          const woke = yield* watchUndelivered(transcript).pipe(Effect.timeoutOption('2 seconds'));
+          assert.isTrue(Option.isSome(woke));
+        } finally {
+          clearTimeout(createTimer);
+        }
+        assert.isTrue(hasUndeliveredMessages(undelivered!));
+
+        // Hidden dotfiles alone do not count as undelivered messages.
+        fs.rmSync(path.join(undelivered!, 'msg-1'));
+        assert.isFalse(hasUndeliveredMessages(undelivered!));
+
+        // Replacing `messages/undelivered/` (new inode) still wakes when a file arrives later.
+        const replaceTimer = setTimeout(() => {
+          fs.rmSync(undelivered!, { recursive: true, force: true });
+          fs.mkdirSync(undelivered!, { recursive: true });
+          setTimeout(() => fs.writeFileSync(path.join(undelivered!, 'msg-replaced'), ''), 40);
+        }, 40);
+        try {
+          const wokeReplaced = yield* watchUndelivered(transcript).pipe(Effect.timeoutOption('2 seconds'));
+          assert.isTrue(Option.isSome(wokeReplaced));
+        } finally {
+          clearTimeout(replaceTimer);
+        }
+
+        // Already-queued message resolves immediately.
+        const started = Date.now();
+        yield* watchUndelivered(transcript);
+        assert.isBelow(Date.now() - started, 500);
+      }),
   );
 
   it.effect('defaults to MAX_HOLD_MS unless turnEndWaitMs is set explicitly', () =>

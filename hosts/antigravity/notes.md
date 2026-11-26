@@ -25,7 +25,7 @@ tilting its head at a question, turn reactions on in the settings
 | What the agent writes | As it goes: the text before each tool call (`PreToolUse`, read from the transcript in a detached process so agy does not wait), and the reply when the agent finishes (`PostInvocation`, with `Stop` as fallback). `show` in the settings decides which of it shows. Tool names come from `PreToolUse` |
 | Permission prompts | Not relayed. agy asks as usual |
 
-`agy -p` runs and subagent conversations get no resident (see `unattended`) and never hold open. While a parent session is waiting on an active subagent, `PostInvocation` also returns immediately so the subagent's reply can wake the parent.
+`agy -p` runs and subagent conversations get no resident (see `unattended`) and never hold open. Whenever Antigravity queues a local wake-up (a background task completion, a subagent reply, a timer, or a prompt you type in the terminal) — or if the resident is stowed or disconnected from Pixling — `PostInvocation` releases the wait immediately so Antigravity can continue without blocking.
 
 ## Going further
 
@@ -41,10 +41,9 @@ tilting its head at a question, turn reactions on in the settings
   not supported.
 - **TUI stays busy while waiting**: because `agy` runs hooks synchronously, the
   terminal looks busy while `PostInvocation` waits for your message on the
-  resident. Typing in the terminal during that wait is queued until the wait
-  ends unless you press `Esc` to interrupt the hook (or configure agy to submit
-  immediately). Turn waiting off with `turnEndWaitMs: 0` if you prefer an idle
-  terminal.
+  resident. Typing a prompt in the terminal releases the wait automatically so
+  your message goes through right away; turn waiting off with `turnEndWaitMs: 0`
+  if you prefer an idle terminal.
 - Holding the turn open does not spend tokens while waiting, and prompt caching
   still works across injected replies, but every continued reply counts toward
   one agy execution loop (so very long continuous stretches can eventually hit
