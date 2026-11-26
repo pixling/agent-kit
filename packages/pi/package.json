@@ -1,6 +1,6 @@
 {
   "name": "@pixling/pi-proxy",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "description": "Talk with pi through a Pixling resident on your Mac desktop: replies show on it, and what you write there goes back to pi. Optionally it reacts to each reply and says it aloud.",
   "keywords": [
     "pi-extension",

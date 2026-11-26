@@ -915,6 +915,36 @@ test('antigravity: turnEndWaitMs=0 disables post-invocation holding and leaves t
   assert.deepEqual(stop.json, {});
 });
 
+test('antigravity: subagent sessions never bind a resident or hold open', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-sub-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'SYSTEM_MESSAGE', source: 'SYSTEM', content: '[Message] sender=parent-1 content=work' }) +
+      '\n' +
+      JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Sub done.' }) +
+      '\n',
+  );
+  const subPayload = { conversationId: 'sub-conv-1', transcriptPath: transcript, lastUserInput: '' };
+
+  for (const event of ['session-start', 'prompt', 'post-invocation', 'stop']) {
+    const r = run('antigravity', event, subPayload, { 'resident ensure': ENSURED, ...INBOX }, env);
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.json, {});
+    assert.deepEqual(r.calls, []);
+  }
+  const tool = run(
+    'antigravity',
+    'before-tool',
+    { ...subPayload, toolCall: { name: 'send_message', args: {} } },
+    {},
+    env,
+  );
+  assert.deepEqual(tool.json, { decision: 'ask' });
+  assert.deepEqual(tool.calls, []);
+});
+
 test('antigravity: PreToolUse never denies a tool call, even with nothing to do', () => {
   const tool = { toolCall: { name: 'run_command', args: { CommandLine: 'ls' } } };
   // No conversation id (nothing to bind), and narration off.

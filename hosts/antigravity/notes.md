@@ -25,7 +25,7 @@ tilting its head at a question, turn reactions on in the settings
 | What the agent writes | As it goes: the text before each tool call (`PreToolUse`, read from the transcript in a detached process so agy does not wait), and the reply when the agent finishes (`PostInvocation`, with `Stop` as fallback). `show` in the settings decides which of it shows. Tool names come from `PreToolUse` |
 | Permission prompts | Not relayed. agy asks as usual |
 
-`agy -p` runs get no resident (see `unattended`) and never hold open.
+`agy -p` runs and subagent conversations get no resident (see `unattended`) and never hold open. While a parent session is waiting on an active subagent, `PostInvocation` also returns immediately so the subagent's reply can wake the parent.
 
 ## Going further
 
