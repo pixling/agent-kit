@@ -9,7 +9,7 @@ Mac desktop, for Claude Code, Codex and the Antigravity CLI.
   or type what to do instead. With no answer in time, the host asks as usual.
 - What you type to the resident goes back to the agent. Claude Code wakes up
   for it even when the session is idle; Codex receives it through `codex queue`, which also wakes an idle session;
-  Antigravity receives it before the agent's next step.
+  Antigravity holds the turn open in `PostInvocation` after each reply (up to 59 min by default; set `turnEndWaitMs: 0` to keep the TUI idle) and continues with what you type.
 - Optional, once you turn them on in the [settings](#settings): the resident
   shows what the agent is busy with, [reacts](#reactions) to each reply in a way
   that fits it (cheers when the work is done, droops when something failed, tilts

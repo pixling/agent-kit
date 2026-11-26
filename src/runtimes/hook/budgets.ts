@@ -7,6 +7,7 @@
 export const BUDGET_SECONDS = {
   'session-start': 12,
   stop: 12,
+  'post-invocation': 12,
   wait: null,
   prompt: 8,
   'before-tool': 8,

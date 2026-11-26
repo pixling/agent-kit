@@ -7,7 +7,7 @@ import { ProxyConfig } from '../../core/services.ts';
 import { describeFailure, ProxyBase, type SessionExtension } from '../base.ts';
 import { BUDGET_SECONDS } from './budgets.ts';
 import { handleEvent, type HookEvent, idle } from './events.ts';
-import type { HookHost, HookOutput } from './HookHost.ts';
+import { HookHost, type HookOutput } from './HookHost.ts';
 
 const WAKE_EXIT_CODE = 2;
 
@@ -32,11 +32,19 @@ const writeOutput = Effect.fn('hook.writeOutput')(function* ({ stdout, wake }: H
 const withinBudget =
   (event: HookEvent) =>
   <A, E, R>(program: Effect.Effect<A, E, R>) =>
-    Effect.flatMap(ProxyConfig, (config) => {
+    Effect.gen(function* () {
       const seconds: number | null = BUDGET_SECONDS[event];
-      if (seconds === null) return program;
-      const budgetMs = seconds * 1000 + (event === 'stop' ? config.turnEndWaitMs : 0);
-      return Effect.timeout(program, Math.max(0, budgetMs - process.uptime() * 1000));
+      if (seconds === null) return yield* program;
+      const config = yield* ProxyConfig;
+      const host = yield* HookHost;
+      const holdMs =
+        event === 'post-invocation'
+          ? (host.holdAtStepEnd?.(config) ?? 0)
+          : event === 'stop' && !host.holdAtStepEnd
+            ? config.turnEndWaitMs
+            : 0;
+      const budgetMs = seconds * 1000 + holdMs;
+      return yield* Effect.timeout(program, Math.max(0, budgetMs - process.uptime() * 1000));
     });
 
 export const runHook = (adapter: Layer.Layer<HookHost>, event: HookEvent, extension?: SessionExtension): void =>

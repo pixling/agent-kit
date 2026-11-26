@@ -1,7 +1,11 @@
 // Each host's payloads, transcript lines and outputs, which stop at its adapter.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { assert, describe, it } from '@effect/vitest';
 import { Effect, type Layer } from 'effect';
-import { Antigravity } from '../src/adapters/antigravity/index.ts';
+import { Antigravity, MAX_HOLD_MS, readStepEndedReply, resolveHoldMs } from '../src/adapters/antigravity/index.ts';
+import { DEFAULTS } from '../src/core/config.ts';
 import { ClaudeCode } from '../src/adapters/claude-code/index.ts';
 import { Codex, isExecRun } from '../src/adapters/codex/index.ts';
 import { HookHost } from '../src/runtimes/hook/HookHost.ts';
@@ -157,8 +161,61 @@ describe('Antigravity', () => {
       Effect.sync(() => {
         assert.deepStrictEqual(host.passTool.stdout, { decision: 'ask' });
         assert.deepStrictEqual(host.tell('user', 'hello').stdout, { injectSteps: [{ userMessage: 'hello' }] });
+        assert.deepStrictEqual(host.continueStep?.('go on').stdout, {
+          terminationBehavior: 'force_continue',
+          injectSteps: [{ userMessage: 'go on' }],
+        });
       }),
     ),
+  );
+
+  it.effect('detects a tool-free final reply at step end, and ignores tool steps', () =>
+    Effect.sync(() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-step-'));
+      const file = path.join(dir, 'transcript_full.jsonl');
+      fs.writeFileSync(file, JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Done.' }) + '\n');
+      assert.deepStrictEqual(readStepEndedReply(file), { text: 'Done.' });
+
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          type: 'PLANNER_RESPONSE',
+          source: 'MODEL',
+          content: 'Running...',
+          tool_calls: [{ name: 'run_command' }],
+        }) + '\n',
+      );
+      assert.strictEqual(readStepEndedReply(file), null);
+
+      fs.appendFileSync(file, JSON.stringify({ type: 'GENERIC', source: 'MODEL', content: 'ok' }) + '\n');
+      assert.strictEqual(readStepEndedReply(file), null);
+      assert.strictEqual(readStepEndedReply(null), null);
+    }),
+  );
+
+  it.effect('defaults to MAX_HOLD_MS unless turnEndWaitMs is set explicitly', () =>
+    Effect.sync(() => {
+      const prevEnv = process.env.PIXLING_PROXY_TURN_END_WAIT_MS;
+      const prevXdg = process.env.XDG_CONFIG_HOME;
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-cfg-'));
+      try {
+        delete process.env.PIXLING_PROXY_TURN_END_WAIT_MS;
+        process.env.XDG_CONFIG_HOME = dir;
+        const base = { ...DEFAULTS, language: 'en' as const };
+        assert.strictEqual(resolveHoldMs(base), MAX_HOLD_MS);
+
+        process.env.PIXLING_PROXY_TURN_END_WAIT_MS = '0';
+        assert.strictEqual(resolveHoldMs({ ...base, turnEndWaitMs: 0 }), 0);
+
+        process.env.PIXLING_PROXY_TURN_END_WAIT_MS = '99999999';
+        assert.strictEqual(resolveHoldMs({ ...base, turnEndWaitMs: 99_999_999 }), MAX_HOLD_MS);
+      } finally {
+        if (prevEnv === undefined) delete process.env.PIXLING_PROXY_TURN_END_WAIT_MS;
+        else process.env.PIXLING_PROXY_TURN_END_WAIT_MS = prevEnv;
+        if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+        else process.env.XDG_CONFIG_HOME = prevXdg;
+      }
+    }),
   );
 });
 
