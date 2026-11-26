@@ -827,16 +827,92 @@ test('antigravity: what the user wrote goes in before the next model call', () =
   assert.match(r.json.injectSteps[0].userMessage, /also update the docs/);
 });
 
-test('antigravity: turnEndWaitMs continues the turn with the answer', () => {
+test('antigravity: post-invocation holds open after a reply and continues with a userMessage', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-post-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '1000' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'All set.' }) + '\n',
+  );
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir] };
+
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
   const r = run(
     'antigravity',
-    'stop',
-    { conversationId: sid, terminationReason: 'NO_TOOL_CALL', executionNum: 0 },
+    'post-invocation',
+    { ...base, invocationNum: 0 },
     { 'inbox wait': { exit: 0, result: { messages: [{ messageID: 'm1', sequence: 3, kind: 'message' }] } }, ...INBOX },
-    { PIXLING_PROXY_TURN_END_WAIT_MS: '1000' },
+    env,
   );
-  assert.equal(r.json.decision, 'continue');
-  assert.match(r.json.reason, /also update the docs/);
+  assert.deepEqual(sent(r), ['All set.']);
+  assert.equal(r.json.terminationBehavior, 'force_continue');
+  assert.match(r.json.injectSteps[0].userMessage, /also update the docs/);
+});
+
+test('antigravity: post-invocation skips tool steps, and trailing stop does not repeat the reply', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-tool-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '50' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir] };
+
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+
+  // Tool step in progress: post-invocation returns immediately without showing or waiting.
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: '', tool_calls: [{ name: 'run_command' }] }) +
+      '\n' +
+      JSON.stringify({ type: 'GENERIC', source: 'MODEL', content: 'ok' }) +
+      '\n',
+  );
+  const mid = run('antigravity', 'post-invocation', { ...base, invocationNum: 0 }, {}, env);
+  assert.deepEqual(mid.json, {});
+  assert.deepEqual(sent(mid), []);
+
+  // Final reply with no user message arriving: post-invocation shows it once, trailing stop stays quiet.
+  fs.appendFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Finished.' }) + '\n',
+  );
+  const end = run(
+    'antigravity',
+    'post-invocation',
+    { ...base, invocationNum: 1 },
+    { 'inbox wait': { exit: 0, result: { messages: [] } } },
+    env,
+  );
+  assert.deepEqual(sent(end), ['Finished.']);
+  assert.deepEqual(end.json, {});
+
+  const trailingStop = run(
+    'antigravity',
+    'stop',
+    { ...base, terminationReason: 'NO_TOOL_CALL', executionNum: 0 },
+    {},
+    env,
+  );
+  assert.deepEqual(sent(trailingStop), []);
+  assert.deepEqual(trailingStop.json, {});
+});
+
+test('antigravity: turnEndWaitMs=0 disables post-invocation holding and leaves the reply to stop', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-off-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '0' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Idle reply.' }) + '\n',
+  );
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir] };
+
+  const post = run('antigravity', 'post-invocation', { ...base, invocationNum: 0 }, {}, env);
+  assert.deepEqual(post.json, {});
+  assert.deepEqual(sent(post), []);
+
+  const stop = run('antigravity', 'stop', { ...base, terminationReason: 'NO_TOOL_CALL', executionNum: 0 }, {}, env);
+  assert.deepEqual(sent(stop), ['Idle reply.']);
+  assert.deepEqual(stop.json, {});
 });
 
 test('antigravity: PreToolUse never denies a tool call, even with nothing to do', () => {

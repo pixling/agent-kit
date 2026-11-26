@@ -1,6 +1,6 @@
 {
   "name": "pixling-proxy",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "description": "Talk with your agent through a Pixling resident on your Mac desktop: replies show on it, permission prompts become questions on it, and what you write there goes back to the agent. Optionally it reacts to each reply and says it aloud.",
   "hooks": "./hooks/codex-hooks.json"
 }

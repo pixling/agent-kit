@@ -33,7 +33,7 @@ Check with `pixling doctor`.
 | [pi](hosts/pi/notes.md) | `pi install npm:@pixling/pi-proxy` | Any time | Experimental |
 | [OpenCode](hosts/opencode/notes.md) | Add `"@pixling/opencode-proxy"` to `plugin` in `opencode.json` | Any time | Experimental |
 | [DeepSeek Harness (dsh)](hosts/dsh/notes.md) | `dsh plugin --profile web add @pixling/dsh-proxy` | Any time | Experimental |
-| [Antigravity CLI](hosts/antigravity/notes.md) | `git clone https://github.com/pixling/agent-kit`<br>`agy plugin install agent-kit/plugins/pixling-proxy` | At the agent's next step, or with your next prompt when idle | Experimental |
+| [Antigravity CLI](hosts/antigravity/notes.md) | `git clone https://github.com/pixling/agent-kit`<br>`agy plugin install agent-kit/plugins/pixling-proxy` | After each reply (`PostInvocation` holds open up to 59 min; TUI stays busy), or with your next prompt | Experimental |
 
 Each session gets its own resident, bound as `client:<host>/<session id>`. Put
 it away from its menu when you no longer want it; the proxy then stays quiet for
@@ -62,7 +62,7 @@ variables):
 | `receive` | `true` | Let you type to the resident and relay it to the agent |
 | `unattended` | `false` | Also bind a resident in non-interactive runs (`claude -p`, SDK workers, `codex exec`, `pi -p`, `agy -p`). Off, so workers started by an agent do not fill the desk. Environment: `PIXLING_PROXY_UNATTENDED=1` |
 | `language` | from `LC_ALL`, `LC_MESSAGES` or `LANG` | `en`, `ja`, `zh-Hant` or `ko`, for the permission question |
-| `turnEndWaitMs` | `0` | Codex and Antigravity: hold each turn open this long for your answer on the resident. The host ends a hook at its own limit: 600 s on Codex, 3600 s on Antigravity |
+| `turnEndWaitMs` | `0` (Antigravity: 59 min) | Codex and Antigravity: hold each turn open this long for your answer on the resident (`0` turns waiting off). Limits: 600 s on Codex (`Stop`), 59 min under the 3600 s hook timeout on Antigravity (`PostInvocation`) |
 | `idleCloseMs` | 6 hours | A session with no activity for this long stops listening until its next activity (the shared receiver hub exits once no active sessions remain). Claude Code's wake-up lasts 6 hours too. `0`: never |
 | `codexQueue` | `true` | Codex only: relay your messages into the session with `codex queue`, which wakes an idle TUI session. Off: they arrive with your next prompt |
 

@@ -2,6 +2,7 @@
 // and the proxy's answers in its host's format.
 import { Context, type Effect, type Schema } from 'effect';
 import type { Activity } from '../../core/Activity.ts';
+import type { Config } from '../../core/config.ts';
 import type { PermissionAnswer } from '../../core/Conversation.ts';
 import type { Daemons } from '../Daemons.ts';
 
@@ -53,6 +54,13 @@ export class HookHost extends Context.Service<
     tell(kind: 'session-start' | 'user', text: string): HookOutput;
     // Continues a turn that was about to end, with what the user wrote.
     resume(text: string): HookOutput;
+    // For hosts with no idle wake-up API: hold open in `post-invocation` once the model
+    // finishes without tool calls, and inject what the user wrote as the next step.
+    readonly holdAtStepEnd?: ((config: Config) => number) | undefined;
+    readonly stepEndedReply?:
+      | ((transcriptPath: string | null | undefined) => { readonly text: string | null } | null)
+      | undefined;
+    readonly continueStep?: ((text: string) => HookOutput) | undefined;
     // What a hook before a tool call answers to leave the call to the host's own checks.
     readonly passTool: HookOutput;
     permission(answer: PermissionAnswer): HookOutput;

@@ -4,6 +4,9 @@
       { "type": "command", "command": "node ./scripts/hook.mjs antigravity session-start", "timeout": 30 }
     ],
     "PreInvocation": [{ "type": "command", "command": "node ./scripts/hook.mjs antigravity prompt", "timeout": 15 }],
+    "PostInvocation": [
+      { "type": "command", "command": "node ./scripts/hook.mjs antigravity post-invocation", "timeout": 3600 }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",
@@ -16,6 +19,6 @@
         ]
       }
     ],
-    "Stop": [{ "type": "command", "command": "node ./scripts/hook.mjs antigravity stop", "timeout": 3600 }]
+    "Stop": [{ "type": "command", "command": "node ./scripts/hook.mjs antigravity stop", "timeout": 30 }]
   }
 }

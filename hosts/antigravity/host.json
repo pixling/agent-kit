@@ -3,8 +3,8 @@
   "name": "Antigravity CLI",
   "homepage": "https://antigravity.google",
   "verified": {
-    "version": "1.5.1",
-    "date": "2026-11-05"
+    "version": "1.5.18",
+    "date": "2026-11-26"
   },
   "skills": {
     "install": "npx skills add pixling/agent-kit -a antigravity",
@@ -26,11 +26,11 @@
       "tools",
       "reply"
     ],
-    "fromResident": "next-prompt",
-    "how": "Command hooks: PreToolUse shows the text written before each tool call (from the transcript, in a detached process), Stop shows the reply. What the user writes goes in as a user message before the next model call (PreInvocation), so mid-turn or with the next prompt; nothing wakes an idle session."
+    "fromResident": "turn-end",
+    "how": "Command hooks: PreToolUse shows text before each tool call (from the transcript, in a detached process). After a tool-free reply, PostInvocation shows the reply and holds the execution open for what you type on the resident, continuing with force_continue + userMessage (and PreInvocation picks up anything mid-turn or once idle). Temporary until Antigravity CLI adds a native turn-start / idle wake-up API."
   },
   "docs": {
     "order": 6,
-    "summary": "Install pixling-proxy in the Antigravity CLI: what the agent writes shows on the resident as it goes, and what you write reaches the agent at its next step."
+    "summary": "Install pixling-proxy in the Antigravity CLI: replies show on the resident, and PostInvocation holds the turn open so what you write continues the conversation."
   }
 }

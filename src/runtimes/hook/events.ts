@@ -28,6 +28,14 @@ import { lastAssistantText, startReading, transcriptActivities, untilWritten } f
 
 // The waiter leaves before its hook's timeout (6 h in hooks.json), so a timeout never shows as an error.
 const WAIT_MS = 6 * 3600 * 1000 - 60_000;
+// Marks a reply already flushed and reacted to in `post-invocation`, so the trailing
+// `stop` event does not show or react to it a second time.
+const STEP_ENDED_MEMO = 'step-ended';
+
+const clearStepEnded = Effect.gen(function* () {
+  const store = yield* SessionStore;
+  if ((yield* store.memo(STEP_ENDED_MEMO)) === true) yield* store.setMemo(STEP_ENDED_MEMO, false);
+});
 
 const watching = Effect.map(ProxyConfig, ({ show }) => watches(show));
 // Tool calls are wanted: to show, or for a bound resident to react to.
@@ -81,6 +89,10 @@ const connectLate = Effect.fn('hook.connectLate')(function* (input: HookInput, u
 const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boolean) {
   const host = yield* HookHost;
   const store = yield* SessionStore;
+  if ((yield* store.memo(STEP_ENDED_MEMO)) === true) {
+    yield* clearStepEnded;
+    return NOTHING;
+  }
   const late = yield* connectLate(input, unattended);
   if (yield* store.isStowed) return NOTHING;
   yield* turnEnded(input.finalText ?? lastAssistantText(input.transcriptPath, host.activitiesOf));
@@ -91,7 +103,7 @@ const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boo
   // Optionally hold the turn open for the user's answer on the resident, where
   // nothing else wakes an idle session for it.
   const config = yield* ProxyConfig;
-  const holdMs = host.wakesFromWait ? 0 : config.turnEndWaitMs;
+  const holdMs = host.wakesFromWait || host.holdAtStepEnd ? 0 : config.turnEndWaitMs;
   if (holdMs > 0 && !input.turnContinued) {
     const texts = yield* waitForUser(holdMs);
     if (texts.length) {
@@ -100,6 +112,41 @@ const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boo
     }
   }
   return NOTHING;
+});
+
+// For hosts without an idle wake-up API: once the model finishes a step with no tool
+// calls, show the reply and hold the execution open for what the user writes on the
+// resident, injecting it as the next user message.
+const postInvocation = Effect.fn('hook.postInvocation')(function* (input: HookInput, unattended: boolean) {
+  const host = yield* HookHost;
+  const config = yield* ProxyConfig;
+  const store = yield* SessionStore;
+  const locks = yield* SessionLocks;
+  const holdMs = host.holdAtStepEnd?.(config) ?? 0;
+  if (unattended || holdMs <= 0 || !config.receive || !host.stepEndedReply || !host.continueStep) return NOTHING;
+  const ended = host.stepEndedReply(input.transcriptPath);
+  if (!ended) return NOTHING;
+  const late = yield* connectLate(input, unattended);
+  if (yield* store.isStowed) return NOTHING;
+  yield* turnEnded(ended.text);
+  yield* store.setMemo(STEP_ENDED_MEMO, true);
+  if (!late && (yield* store.isBound)) yield* listen(input);
+  if ((yield* store.isStowed) || !(yield* store.isBound)) return NOTHING;
+  // A previous waiter left behind by an interrupted turn is replaced cleanly.
+  yield* locks.stopHolder('waiter');
+  if (!(yield* locks.lock('waiter'))) return NOTHING;
+  return yield* Effect.gen(function* () {
+    const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId)).pipe(
+      Effect.as<ReadonlyArray<Relayed>>([]),
+    );
+    const texts = yield* waitForUser(holdMs).pipe(Effect.raceFirst(gone));
+    yield* Effect.logInfo(`post-invocation woke texts=${texts.length}`);
+    if (!texts.length) return NOTHING;
+    yield* clearStepEnded;
+    yield* turnStarted;
+    yield* noticeTurn;
+    return host.continueStep!(userMessageForAgent(texts, yield* CurrentSession));
+  }).pipe(Effect.ensuring(locks.unlock('waiter')));
 });
 
 // Blocks until the user writes, then wakes the session with the message. One waiter per session.
@@ -141,6 +188,7 @@ const MIN_LOOK_MS = 500;
 
 const prompt = Effect.fn('hook.prompt')(function* (input: HookInput, unattended: boolean) {
   const host = yield* HookHost;
+  yield* clearStepEnded;
   // Cut short once bound, it still bound here: an already bound session returns at once.
   const connected = yield* Effect.timeoutOption(connectLate(input, unattended), promptLeftMs());
   const late = Option.isSome(connected) ? connected.value : yield* (yield* SessionStore).isBound;
@@ -223,6 +271,7 @@ const sessionEnd = Effect.fn('hook.sessionEnd')(function* (input: HookInput) {
 const EVENTS = {
   'session-start': sessionStart,
   stop,
+  'post-invocation': postInvocation,
   wait,
   prompt,
   'before-tool': beforeTool,
