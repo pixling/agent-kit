@@ -1,6 +1,6 @@
 {
   "name": "@pixling/opencode-proxy",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "description": "Talk with OpenCode through a Pixling resident on your Mac desktop: replies show on it, permission prompts become questions on it, and what you write there goes back to OpenCode. Optionally it reacts to each reply and says it aloud.",
   "keywords": [
     "opencode",

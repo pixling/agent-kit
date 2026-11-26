@@ -11,9 +11,9 @@
 import { type ChildProcess as NodeChildProcess, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { NodeRuntime, NodeServices } from '@effect/platform-node';
-import { Effect, Fiber, Layer } from 'effect';
+import { Effect, Fiber, Layer, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/process';
-import { relay } from '../../core/Conversation.ts';
+import { DeliveryGone, relay } from '../../core/Conversation.ts';
 import { CurrentSession } from '../../core/services.ts';
 import { type Relayed, userMessageForAgent } from '../../core/text.ts';
 import { cliPath } from '../../pixling/cli.ts';
@@ -41,21 +41,34 @@ const MULTIPLEX_RESTART_MIN_MS = 500;
 const MULTIPLEX_RESTART_MAX_MS = 15_000;
 const QUICK_EXIT_MS = 5_000;
 
+// Permanent `codex queue` errors where the target thread no longer exists.
+const THREAD_GONE = /no rollout found|thread\b.*\bnot found|session\b.*\bnot found/i;
+const PERMANENT_WAIT_END = new Set(['closed', 'notBound', 'invalid', 'invalidArguments']);
+
 const makeQueue = (threadId: string) => (texts: ReadonlyArray<Relayed>) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const session = yield* CurrentSession;
-    const code = yield* spawner
-      .exitCode(
+  Effect.scoped(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const session = yield* CurrentSession;
+      const handle = yield* spawner.spawn(
         ChildProcess.make(
           process.env.CODEX_BIN || 'codex',
           ['queue', '--thread', threadId, '--message', userMessageForAgent(texts, session)],
-          { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+          { stdin: 'ignore', stdout: 'ignore', stderr: 'pipe', forceKillAfter: '1 second' },
         ),
-      )
-      .pipe(Effect.timeout(QUEUE_TIMEOUT));
-    if (Number(code) !== 0) return yield* Effect.fail(new Error('codex queue refused'));
-  });
+      );
+      const [code, stderr] = yield* Effect.all(
+        [handle.exitCode, handle.stderr.pipe(Stream.decodeText(), Stream.mkString)],
+        { concurrency: 'unbounded' },
+      );
+      if (Number(code) !== 0) {
+        if (THREAD_GONE.test(stderr)) {
+          return yield* new DeliveryGone({ reason: `codex thread ${threadId} not found` });
+        }
+        return yield* Effect.fail(new Error('codex queue refused'));
+      }
+    }),
+  ).pipe(Effect.timeout(QUEUE_TIMEOUT));
 
 const runSingleSession = (namespace: string, key: string, hostPid: string, threadId: string) => {
   const session = DaemonsLive.pipe(Layer.provideMerge(sessionFiles({ namespace, key, author: 'Codex' })));
@@ -74,11 +87,16 @@ interface MultiplexWaitEvent {
   readonly event?: string;
   readonly namespace?: string;
   readonly key?: string;
+  readonly reason?: string;
 }
 
 type WaitOutcome = 'arrived' | 'ended' | 'retry';
 
 class WaitMultiplexer {
+  private readonly onGone?: ((id: string, reason: string) => boolean) | undefined;
+  constructor(onGone?: (id: string, reason: string) => boolean) {
+    this.onGone = onGone;
+  }
   private child: NodeChildProcess | null = null;
   private unsupported = false;
   private restartBackoff = MULTIPLEX_RESTART_MIN_MS;
@@ -217,7 +235,11 @@ class WaitMultiplexer {
       waiter.resolve('arrived');
     } else if (parsed.event === 'ended') {
       this.waiters.delete(id);
-      waiter.resolve('ended');
+      const retired =
+        typeof parsed.reason === 'string' && PERMANENT_WAIT_END.has(parsed.reason)
+          ? (this.onGone?.(id, parsed.reason) ?? false)
+          : false;
+      if (!retired) waiter.resolve('ended');
     }
   }
 
@@ -297,11 +319,19 @@ const runHub = () => {
   const dir = hubEntriesDir(FORWARDER_HUB_DIR);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const hubLocks = deskLocks();
-  const mux = new WaitMultiplexer();
   const tracked = new Map<string, TrackedForwarder>();
   let watcher: fs.FSWatcher | null = null;
   let emptyTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
+  const mux = new WaitMultiplexer((id, reason) => {
+    const state = tracked.get(id);
+    if (!state || shuttingDown) return false;
+    log(`codex forwarder hub retiring ${state.entry.namespace}/${state.entry.key} (${reason})`);
+    Effect.runSync(removeHubEntry(state.entry.namespace, state.entry.key, FORWARDER_HUB_DIR));
+    stopTracked(id);
+    scheduleEmptyCheck();
+    return Boolean(state.fiber);
+  });
 
   const baseLayer = Layer.mergeAll(ProxyBase, NodeServices.layer);
   const hubBaseLayer = Layer.effect(

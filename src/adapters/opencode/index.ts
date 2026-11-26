@@ -14,6 +14,7 @@ const NAMESPACE = 'opencode';
 const AUTHOR = 'OpenCode';
 const TEXT_PARTS_WITHIN_MS = 250;
 const TOOL_AFTER_TEXT_MS = 50;
+const MAX_EARLY_REPLIED = 200;
 
 const Text = Schema.optional(Schema.NullOr(Schema.String));
 
@@ -105,6 +106,7 @@ const v2Card = (d: typeof V2Data.Type) => {
 function makeProxy(deliver: (id: string, message: string) => unknown, extension: SessionExtension | undefined) {
   const live = makeLive({ namespace: NAMESPACE, author: AUTHOR, deliver }, extension);
   const asking = new Map<string, AbortController>();
+  const earlyReplied = new Set<string>();
   return {
     open: (id: string) => live.start(id),
     close: (id: string) => live.close(id),
@@ -125,6 +127,7 @@ function makeProxy(deliver: (id: string, message: string) => unknown, extension:
       card: { tool: string; input: unknown },
       reply: (allow: boolean) => Promise<unknown>,
     ): Promise<void> {
+      if (earlyReplied.delete(request)) return;
       const asked = new AbortController();
       asking.set(request, asked);
       try {
@@ -135,7 +138,19 @@ function makeProxy(deliver: (id: string, message: string) => unknown, extension:
         asking.delete(request);
       }
     },
-    replied: (request: string) => asking.get(request)?.abort(),
+    replied(request: string) {
+      if (!request) return;
+      const inFlight = asking.get(request);
+      if (inFlight) {
+        inFlight.abort();
+        return;
+      }
+      earlyReplied.add(request);
+      if (earlyReplied.size > MAX_EARLY_REPLIED) {
+        const oldest = earlyReplied.values().next().value;
+        if (oldest !== undefined) earlyReplied.delete(oldest);
+      }
+    },
   };
 }
 
@@ -297,7 +312,43 @@ export const opencodeProxy = (extension?: SessionExtension) => ({
     const roots = makeRoots(async (sessionID) => (await ctx.session.get({ sessionID }))?.parentID);
     const ac = new AbortController();
     const texts = new Map<string, string>();
-    const toolNames = new Map<string, string>();
+    const toolNames = new Map<string, { readonly sessionID: string; readonly name: string }>();
+    const chains = new Map<string, Promise<void>>();
+    const pendingTools = new Map<
+      string,
+      Set<{ readonly timer: ReturnType<typeof setTimeout>; readonly run: () => Promise<void> }>
+    >();
+
+    const clearToolNames = (sessionID: string) => {
+      if (!sessionID) return;
+      for (const [toolId, entry] of toolNames) {
+        if (entry.sessionID === sessionID) toolNames.delete(toolId);
+      }
+    };
+
+    const enqueue = (id: string, task: () => Promise<void>, onError: (e: unknown) => void): void => {
+      const guarded = () => (ac.signal.aborted ? Promise.resolve() : task());
+      if (!id) {
+        void guarded().catch(onError);
+        return;
+      }
+      const prev = chains.get(id) ?? Promise.resolve();
+      const next = prev.then(guarded).catch(onError);
+      const settled = next.finally(() => {
+        if (chains.get(id) === settled) chains.delete(id);
+      });
+      chains.set(id, settled);
+    };
+
+    const flushPendingTools = async (id: string, emit: boolean) => {
+      const queued = pendingTools.get(id);
+      if (!queued) return;
+      pendingTools.delete(id);
+      for (const item of queued) {
+        clearTimeout(item.timer);
+        if (emit) await item.run();
+      }
+    };
 
     const handle = async (type: string, d: typeof V2Data.Type) => {
       const id = d.sessionID ?? d.info?.id ?? d.id ?? '';
@@ -308,6 +359,8 @@ export const opencodeProxy = (extension?: SessionExtension) => ({
         case 'session.deleted':
           roots.forget(id);
           texts.delete(id);
+          clearToolNames(id);
+          await flushPendingTools(id, false);
           proxy.close(id);
           break;
         case 'session.text.ended':
@@ -323,37 +376,53 @@ export const opencodeProxy = (extension?: SessionExtension) => ({
         // which OpenCode sends just ahead of the end of the text before it. So the name
         // is told a moment later, to come after that text.
         case 'session.tool.input.started':
-          if (d.id && d.name) toolNames.set(d.id, d.name);
+          if (d.id && d.name) toolNames.set(d.id, { sessionID: d.sessionID ?? '', name: d.name });
           break;
         case 'session.tool.called':
         case 'session.tool.failed': {
-          const name = toolNames.get(d.id ?? '');
+          const name = toolNames.get(d.id ?? '')?.name;
           toolNames.delete(d.id ?? '');
           if (!name || !(await roots.has(id))) break;
-          const later = setTimeout(
-            () => void proxy.did(id, { kind: 'tool', name }).catch(failed(type)),
-            TOOL_AFTER_TEXT_MS,
-          );
-          later.unref?.();
+          const set = pendingTools.get(id) ?? new Set();
+          pendingTools.set(id, set);
+          const run = () => proxy.did(id, { kind: 'tool', name }).catch(failed(type));
+          const item: { readonly timer: ReturnType<typeof setTimeout>; readonly run: () => Promise<void> } = {
+            run,
+            timer: setTimeout(() => {
+              set.delete(item);
+              if (!set.size) pendingTools.delete(id);
+              void run();
+            }, TOOL_AFTER_TEXT_MS),
+          };
+          item.timer.unref?.();
+          set.add(item);
           break;
         }
         case 'session.execution.succeeded':
           if (!(await roots.has(id))) break;
+          await flushPendingTools(id, true);
           await proxy.turnEnded(id, texts.get(id));
+          texts.delete(id);
+          break;
+        case 'session.execution.failed':
+        case 'session.execution.interrupted':
+          clearToolNames(id);
+          await flushPendingTools(id, false);
           texts.delete(id);
           break;
         case 'permission.asked': {
           const request = d.id;
           if (!request || !d.sessionID || !(await roots.has(d.sessionID))) break;
           const sessionID = d.sessionID;
-          await proxy.permission(sessionID, request, { tool: d.action || 'tool', input: v2Card(d) }, (allow) =>
-            ctx.permission.reply({ sessionID, requestID: request, decision: allow ? 'once' : 'reject' }),
-          );
+          // Not awaited: a question may wait a minute for its answer, and the answer
+          // given on OpenCode's own screen arrives as the next event on this stream.
+          void proxy
+            .permission(sessionID, request, { tool: d.action || 'tool', input: v2Card(d) }, (allow) =>
+              ctx.permission.reply({ sessionID, requestID: request, decision: allow ? 'once' : 'reject' }),
+            )
+            .catch(failed('permission'));
           break;
         }
-        case 'permission.replied':
-          proxy.replied(d.requestID ?? '');
-          break;
       }
     };
 
@@ -367,19 +436,35 @@ export const opencodeProxy = (extension?: SessionExtension) => ({
         'session.tool.called',
         'session.tool.failed',
         'session.execution.succeeded',
+        'session.execution.failed',
+        'session.execution.interrupted',
         'permission.asked',
         'permission.replied',
       ];
       for await (const e of ctx.event.subscribe({ signal: ac.signal, types })) {
         const data = decodeV2(e.data ?? e.properties ?? {});
-        // Not awaited: a question waits a minute for its answer, and the answer given on
-        // OpenCode's own screen is the next event. A session's texts keep their order.
-        if (Option.isSome(data)) void handle(e.type, data.value).catch(failed(e.type));
+        if (Option.isNone(data)) continue;
+        const d = data.value;
+        // `permission.replied` must abort an in-flight permission card immediately without
+        // waiting behind queued session events.
+        if (e.type === 'permission.replied') {
+          proxy.replied(d.requestID ?? '');
+          continue;
+        }
+        const id = d.sessionID ?? d.info?.id ?? d.id ?? '';
+        enqueue(id, () => handle(e.type, d), failed(e.type));
       }
     })().catch((e) => {
       if (!ac.signal.aborted) failed('event stream')(e);
     });
-    return () => ac.abort();
+    return () => {
+      ac.abort();
+      toolNames.clear();
+      for (const set of pendingTools.values()) {
+        for (const item of set) clearTimeout(item.timer);
+      }
+      pendingTools.clear();
+    };
   },
 });
 

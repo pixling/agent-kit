@@ -100,6 +100,7 @@ export const piProxy = (extension?: SessionExtension) =>
     });
 
     pi.on('session_shutdown', () => {
+      lastText = undefined;
       live?.closeAll();
       live = null;
     });

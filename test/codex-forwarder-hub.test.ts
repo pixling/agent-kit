@@ -364,3 +364,121 @@ test('codex forwarder hub falls back to per-session inbox wait when CLI rejects 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test('codex forwarder hub retires a thread permanently when codex queue reports no rollout found', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-fwd-gone-'));
+  const cache = path.join(dir, 'cache');
+  const entriesDir = path.join(cache, 'pixling-proxy', FORWARDER_HUB_DIR, 'entries');
+  fs.mkdirSync(entriesDir, { recursive: true });
+  const calls = path.join(dir, 'calls.jsonl');
+  const scenario = path.join(dir, 'scenario.json');
+  const codexBin = path.join(dir, 'codex');
+  fs.writeFileSync(
+    codexBin,
+    `#!/bin/sh\necho "Error: failed to queue session message: no rollout found for thread id thread-gone" >&2\nexit 1\n`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(calls, '');
+  fs.writeFileSync(
+    scenario,
+    JSON.stringify({
+      'inbox wait k-gone': [
+        { exit: 0, result: { messages: [{ messageID: 'm1', sequence: 2, kind: 'message' }] } },
+        { hold: true },
+      ],
+      'inbox watch k-gone': { exit: 0, result: { messages: [{ messageID: 'm1', sequence: 2, kind: 'message' }] } },
+      'inbox read': { exit: 0, result: { kind: 'message', sequence: 2, text: 'hello?' } },
+    }),
+  );
+
+  const file = path.join(entriesDir, `${entryId('codex', 'k-gone')}.json`);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      namespace: 'codex',
+      key: 'k-gone',
+      hostPid: process.pid,
+      idleCloseMs: 60_000,
+      registeredAt: Date.now(),
+      extra: ['thread-gone'],
+    }),
+  );
+
+  const hub = spawn(process.execPath, [hubScript, '--hub'], {
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      CODEX_BIN: codexBin,
+      PIXLING_CLI: fakeCli,
+      FAKE_LOG: calls,
+      FAKE_SCENARIO: scenario,
+      XDG_CACHE_HOME: cache,
+      XDG_CONFIG_HOME: path.join(dir, 'config'),
+    },
+  });
+
+  try {
+    const code = await exited(hub);
+    assert.equal(code, 0);
+    assert.equal(fs.existsSync(file), false, 'deleted-thread entry must be removed from disk');
+  } finally {
+    try {
+      hub.kill('SIGKILL');
+    } catch {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test('codex forwarder hub retires a thread when wait --multiplex ends with notBound', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-fwd-notbound-'));
+  const cache = path.join(dir, 'cache');
+  const entriesDir = path.join(cache, 'pixling-proxy', FORWARDER_HUB_DIR, 'entries');
+  fs.mkdirSync(entriesDir, { recursive: true });
+  const calls = path.join(dir, 'calls.jsonl');
+  const scenario = path.join(dir, 'scenario.json');
+  const codex = makeCodexStub(dir);
+  fs.writeFileSync(calls, '');
+  fs.writeFileSync(
+    scenario,
+    JSON.stringify({
+      'inbox wait k-nb': { exit: 5, error: { code: 'notBound', detail: 'notBound' } },
+    }),
+  );
+
+  const file = path.join(entriesDir, `${entryId('codex', 'k-nb')}.json`);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      namespace: 'codex',
+      key: 'k-nb',
+      hostPid: process.pid,
+      idleCloseMs: 60_000,
+      registeredAt: Date.now(),
+      extra: ['thread-nb'],
+    }),
+  );
+
+  const hub = spawn(process.execPath, [hubScript, '--hub'], {
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      CODEX_BIN: codex.bin,
+      PIXLING_CLI: fakeCli,
+      FAKE_LOG: calls,
+      FAKE_SCENARIO: scenario,
+      XDG_CACHE_HOME: cache,
+      XDG_CONFIG_HOME: path.join(dir, 'config'),
+    },
+  });
+
+  try {
+    const code = await exited(hub);
+    assert.equal(code, 0);
+    assert.equal(fs.existsSync(file), false, 'notBound entry must be removed from disk');
+  } finally {
+    try {
+      hub.kill('SIGKILL');
+    } catch {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);

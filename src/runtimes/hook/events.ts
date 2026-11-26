@@ -17,7 +17,7 @@ import {
   waitForUser,
 } from '../../core/Conversation.ts';
 import { CurrentSession, Expression, ProxyConfig, SessionStore } from '../../core/services.ts';
-import { boundContext, type Relayed, userMessageForAgent } from '../../core/text.ts';
+import { boundContext, userMessageForAgent } from '../../core/text.ts';
 import type { Desk } from '../../pixling/Desk.ts';
 import { hostGone, type SessionExtension } from '../base.ts';
 import { Daemons, DaemonsLive, RECEIVER } from '../Daemons.ts';
@@ -88,6 +88,27 @@ const connectLate = Effect.fn('hook.connectLate')(function* (input: HookInput, u
   return true;
 });
 
+// Optional test override for the resident disconnect check interval during waits.
+const deskCheckMs = (): number | undefined => {
+  const raw = Number(process.env.PIXLING_PROXY_DESK_CHECK_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : undefined;
+};
+
+// Waits for the user on the resident while both the host process and the resident
+// connection stay alive (and no extra interrupt fires). Only the blocking inbox wait
+// is raced, so an arriving message is always read to completion.
+const waitWhileConnected = Effect.fn('hook.waitWhileConnected')(function* (
+  input: HookInput,
+  timeoutMs: number,
+  extraInterrupt: Effect.Effect<void> = Effect.never,
+) {
+  const host = yield* HookHost;
+  const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId));
+  const disconnected = residentDisconnected(deskCheckMs());
+  const until = extraInterrupt.pipe(Effect.raceFirst(gone), Effect.raceFirst(disconnected));
+  return yield* waitForUser(timeoutMs, until);
+});
+
 const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boolean) {
   const host = yield* HookHost;
   const store = yield* SessionStore;
@@ -106,8 +127,16 @@ const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boo
   // nothing else wakes an idle session for it.
   const config = yield* ProxyConfig;
   const holdMs = host.wakesFromWait || host.holdAtStepEnd ? 0 : config.turnEndWaitMs;
-  if (holdMs > 0 && !input.turnContinued) {
-    const texts = yield* waitForUser(holdMs);
+  if (
+    !unattended &&
+    config.receive &&
+    holdMs > 0 &&
+    !input.turnContinued &&
+    (yield* store.isBound) &&
+    !(yield* store.isStowed)
+  ) {
+    if (!late && !(yield* residentOnDesk())) return NOTHING;
+    const texts = yield* waitWhileConnected(input, holdMs);
     if (texts.length) {
       yield* turnStarted;
       return host.resume(userMessageForAgent(texts, yield* CurrentSession));
@@ -115,12 +144,6 @@ const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boo
   }
   return NOTHING;
 });
-
-// Optional test override for the resident disconnect check interval during step-end waits.
-const deskCheckMs = (): number | undefined => {
-  const raw = Number(process.env.PIXLING_PROXY_DESK_CHECK_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : undefined;
-};
 
 // For hosts without an idle wake-up API: once the model finishes a step with no tool
 // calls, show the reply and hold the execution open for what the user writes on the
@@ -153,11 +176,8 @@ const postInvocation = Effect.fn('hook.postInvocation')(function* (input: HookIn
     yield* locks.stopHolder('waiter');
     if (!(yield* locks.lock('waiter'))) return NOTHING;
     return yield* Effect.gen(function* () {
-      const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId));
-      const disconnected = residentDisconnected(deskCheckMs());
       const hostWake = interruptWatch ? Fiber.join(interruptWatch) : Effect.never;
-      const until = hostWake.pipe(Effect.raceFirst(gone), Effect.raceFirst(disconnected));
-      const texts = yield* waitForUser(holdMs, until);
+      const texts = yield* waitWhileConnected(input, holdMs, hostWake);
       yield* Effect.logInfo(`post-invocation woke texts=${texts.length}`);
       if (!texts.length) return NOTHING;
       yield* clearStepEnded;
@@ -182,11 +202,10 @@ const wait = Effect.fn('hook.wait')(function* (input: HookInput, unattended: boo
     // SessionStart runs its hooks in parallel: bind here too, so waiting never
     // starts on a pair that is not bound yet.
     if ((yield* connect(input, unattended)) !== 'onDesk') return NOTHING;
-    // A host that crashed never ends this hook itself.
-    const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId)).pipe(
-      Effect.as<ReadonlyArray<Relayed>>([]),
-    );
-    const texts = yield* waitForUser(WAIT_MS).pipe(Effect.raceFirst(gone));
+    // Ends if the host crashes; `inbox wait` itself exits on stowed/notBound and
+    // survives Pixling restarts without idle polling.
+    const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId));
+    const texts = yield* waitForUser(WAIT_MS, gone);
     yield* Effect.logInfo(`wait woke texts=${texts.length}`);
     if (!texts.length) return NOTHING;
     yield* turnStarted;
