@@ -8,6 +8,8 @@ import {
   noticeStart,
   noticeTurn,
   observed,
+  residentDisconnected,
+  residentOnDesk,
   showPending,
   takeUserMessages,
   turnEnded,
@@ -114,6 +116,12 @@ const stop = Effect.fn('hook.stop')(function* (input: HookInput, unattended: boo
   return NOTHING;
 });
 
+// Optional test override for the resident disconnect check interval during step-end waits.
+const deskCheckMs = (): number | undefined => {
+  const raw = Number(process.env.PIXLING_PROXY_DESK_CHECK_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : undefined;
+};
+
 // For hosts without an idle wake-up API: once the model finishes a step with no tool
 // calls, show the reply and hold the execution open for what the user writes on the
 // resident, injecting it as the next user message.
@@ -127,26 +135,37 @@ const postInvocation = Effect.fn('hook.postInvocation')(function* (input: HookIn
   const ended = host.stepEndedReply(input.transcriptPath);
   if (!ended) return NOTHING;
   const late = yield* connectLate(input, unattended);
-  if (yield* store.isStowed) return NOTHING;
+  if ((yield* store.isStowed) || !(yield* store.isBound)) return NOTHING;
   yield* turnEnded(ended.text);
   yield* store.setMemo(STEP_ENDED_MEMO, true);
-  if (!late && (yield* store.isBound)) yield* listen(input);
-  if ((yield* store.isStowed) || !(yield* store.isBound)) return NOTHING;
-  // A previous waiter left behind by an interrupted turn is replaced cleanly.
-  yield* locks.stopHolder('waiter');
-  if (!(yield* locks.lock('waiter'))) return NOTHING;
+  if (yield* store.isStowed) return NOTHING;
+  if (!late && !(yield* residentOnDesk())) return NOTHING;
+  if (!late) yield* listen(input);
+  const interruptWatch = host.waitInterrupted
+    ? yield* Effect.forkChild(host.waitInterrupted(input), { startImmediately: true })
+    : null;
   return yield* Effect.gen(function* () {
-    const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId)).pipe(
-      Effect.as<ReadonlyArray<Relayed>>([]),
-    );
-    const texts = yield* waitForUser(holdMs).pipe(Effect.raceFirst(gone));
-    yield* Effect.logInfo(`post-invocation woke texts=${texts.length}`);
-    if (!texts.length) return NOTHING;
-    yield* clearStepEnded;
-    yield* turnStarted;
-    yield* noticeTurn;
-    return host.continueStep!(userMessageForAgent(texts, yield* CurrentSession));
-  }).pipe(Effect.ensuring(locks.unlock('waiter')));
+    if (interruptWatch && interruptWatch.pollUnsafe() !== undefined) {
+      yield* Effect.logInfo('post-invocation skipped wait: host has pending messages');
+      return NOTHING;
+    }
+    // A previous waiter left behind by an interrupted turn is replaced cleanly.
+    yield* locks.stopHolder('waiter');
+    if (!(yield* locks.lock('waiter'))) return NOTHING;
+    return yield* Effect.gen(function* () {
+      const gone = hostGone((yield* host.pid) ?? 0, lastActive(host.id, input.sessionId));
+      const disconnected = residentDisconnected(deskCheckMs());
+      const hostWake = interruptWatch ? Fiber.join(interruptWatch) : Effect.never;
+      const until = hostWake.pipe(Effect.raceFirst(gone), Effect.raceFirst(disconnected));
+      const texts = yield* waitForUser(holdMs, until);
+      yield* Effect.logInfo(`post-invocation woke texts=${texts.length}`);
+      if (!texts.length) return NOTHING;
+      yield* clearStepEnded;
+      yield* turnStarted;
+      yield* noticeTurn;
+      return host.continueStep!(userMessageForAgent(texts, yield* CurrentSession));
+    }).pipe(Effect.ensuring(locks.unlock('waiter')));
+  }).pipe(Effect.ensuring(interruptWatch ? Fiber.interrupt(interruptWatch) : Effect.void));
 });
 
 // Blocks until the user writes, then wakes the session with the message. One waiter per session.

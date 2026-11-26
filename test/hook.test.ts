@@ -945,6 +945,185 @@ test('antigravity: subagent sessions never bind a resident or hold open', () => 
   assert.deepEqual(tool.calls, []);
 });
 
+test('antigravity: post-invocation skips waiting when undelivered messages are already queued', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-prequeue-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const logsDir = path.join(dir, '.system_generated', 'logs');
+  const undeliveredDir = path.join(dir, '.system_generated', 'messages', 'undelivered');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(undeliveredDir, { recursive: true });
+  const transcript = path.join(logsDir, 'transcript.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Waiting on tests.' }) + '\n',
+  );
+  fs.writeFileSync(path.join(undeliveredDir, 'task-done-1'), '');
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir], lastUserInput: 'run tests' };
+
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+  const started = Date.now();
+  const r = run('antigravity', 'post-invocation', { ...base, invocationNum: 0 }, {}, env);
+  assert.equal(r.status, 0);
+  assert.deepEqual(sent(r), ['Waiting on tests.']);
+  assert.deepEqual(r.json, {});
+  assert.equal(
+    r.calls.some((c) => c[0] === 'inbox' && c[1] === 'wait'),
+    false,
+    'never spawns inbox wait when undelivered messages are already present',
+  );
+  assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
+});
+
+test('antigravity: post-invocation aborts inbox wait as soon as an undelivered message arrives', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-arrive-'));
+  const cli = path.join(dir, 'pixling');
+  fs.writeFileSync(
+    cli,
+    `#!/bin/sh\ncase "$*" in *"inbox wait"*) exec sleep 300;; esac\nexec ${JSON.stringify(FAKE)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const logsDir = path.join(dir, '.system_generated', 'logs');
+  const undeliveredDir = path.join(dir, '.system_generated', 'messages', 'undelivered');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const transcript = path.join(logsDir, 'transcript.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Running background task.' }) + '\n',
+  );
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir], lastUserInput: 'go' };
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+
+  const scenario = path.join(dir, 'scenario.json');
+  const log = path.join(dir, 'calls.jsonl');
+  fs.writeFileSync(scenario, JSON.stringify({ 'resident ensure': ENSURED }));
+  const started = Date.now();
+  const child = spawn(process.execPath, [HOOK, 'antigravity', 'post-invocation'], {
+    env: { ...process.env, ...env, PIXLING_CLI: cli, FAKE_SCENARIO: scenario, FAKE_LOG: log },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stdin.end(JSON.stringify({ ...base, invocationNum: 0 }));
+
+  // Create `messages/undelivered/<id>` once the hook is waiting.
+  const timer = setTimeout(() => {
+    fs.mkdirSync(undeliveredDir, { recursive: true });
+    fs.writeFileSync(path.join(undeliveredDir, 'task-finished'), '');
+  }, 300);
+
+  const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
+  clearTimeout(timer);
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(stdout), {});
+  assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
+}, 15_000);
+
+test('antigravity: post-invocation skips waiting when the resident is disconnected or stowed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-disc-pre-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Done.' }) + '\n');
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir], lastUserInput: 'hi' };
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+
+  const unavailable = { exit: 5, error: { code: 'unavailable', detail: 'Pixling is not running' } };
+  const r = run(
+    'antigravity',
+    'post-invocation',
+    { ...base, invocationNum: 0 },
+    { 'message send': unavailable, 'resident ensure': unavailable },
+    env,
+  );
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.json, {});
+  assert.equal(
+    r.calls.some((c) => c[0] === 'inbox' && c[1] === 'wait'),
+    false,
+    'does not wait when Pixling is unreachable',
+  );
+});
+
+test('antigravity: post-invocation aborts inbox wait when the resident disconnects during the wait', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-disc-mid-'));
+  const cli = path.join(dir, 'pixling');
+  fs.writeFileSync(
+    cli,
+    `#!/bin/sh\ncase "$*" in *"inbox wait"*) exec sleep 300;; esac\nexec ${JSON.stringify(FAKE)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const env = {
+    XDG_CACHE_HOME: path.join(dir, 'cache'),
+    PIXLING_PROXY_TURN_END_WAIT_MS: '60000',
+    PIXLING_PROXY_DESK_CHECK_MS: '100',
+    PIXLING_CLI: cli,
+  };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Waiting.' }) + '\n',
+  );
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir], lastUserInput: 'hi' };
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+
+  const started = Date.now();
+  const r = run(
+    'antigravity',
+    'post-invocation',
+    { ...base, invocationNum: 0 },
+    { 'resident ensure': [ENSURED, { exit: 0, result: { state: 'stowed' } }] },
+    env,
+  );
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.json, {});
+  assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
+}, 15_000);
+
+test('antigravity: post-invocation finishes reading a resident reply even if undelivered arrives mid-read', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-midread-'));
+  const logsDir = path.join(dir, '.system_generated', 'logs');
+  const undeliveredDir = path.join(dir, '.system_generated', 'messages', 'undelivered');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(undeliveredDir, { recursive: true });
+  const transcript = path.join(logsDir, 'transcript.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Ready.' }) + '\n');
+  // Fake CLI that writes an undelivered file while `inbox read` is in flight: the read
+  // must not be cut short once `inbox wait` has already signaled an arrival.
+  const cli = path.join(dir, 'pixling');
+  fs.writeFileSync(
+    cli,
+    `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2).filter((a) => a !== '--json');
+if (args[0] === 'inbox' && args[1] === 'read') {
+  fs.writeFileSync(path.join(${JSON.stringify(undeliveredDir)}, 'late-task'), '');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+}
+const r = spawnSync(process.execPath, [${JSON.stringify(FAKE)}, ...process.argv.slice(2)], { stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`,
+    { mode: 0o755 },
+  );
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000', PIXLING_CLI: cli };
+  const base = { conversationId: sid, transcriptPath: transcript, workspacePaths: [dir], lastUserInput: 'go' };
+  run('antigravity', 'session-start', base, { 'resident ensure': ENSURED }, env);
+
+  const r = run(
+    'antigravity',
+    'post-invocation',
+    { ...base, invocationNum: 0 },
+    { 'inbox wait': { exit: 0, result: { messages: [{ messageID: 'm1', sequence: 3, kind: 'message' }] } }, ...INBOX },
+    env,
+  );
+  assert.equal(r.status, 0);
+  assert.equal(r.json.terminationBehavior, 'force_continue');
+  assert.match(r.json.injectSteps[0].userMessage, /also update the docs/);
+}, 15_000);
+
 test('antigravity: PreToolUse never denies a tool call, even with nothing to do', () => {
   const tool = { toolCall: { name: 'run_command', args: { CommandLine: 'ls' } } };
   // No conversation id (nothing to bind), and narration off.
