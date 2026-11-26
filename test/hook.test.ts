@@ -1386,3 +1386,93 @@ test('a resident state this proxy does not know is not taken for on the desk', (
   );
   assert.deepEqual(r.json, {});
 });
+
+test('claude-code: wait stays zero-poll during inbox wait and wakes when a message arrives', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-claude-wait-'));
+  const cli = path.join(dir, 'pixling');
+  fs.writeFileSync(
+    cli,
+    `#!/bin/sh\ncase "$*" in *"inbox wait"*) sleep 0.25;; esac\nexec ${JSON.stringify(FAKE)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const r = run(
+    'claude-code',
+    'wait',
+    { session_id: sid },
+    {
+      'resident ensure': [ENSURED, { exit: 5, error: { code: 'unavailable', detail: 'restarting' } }],
+      'inbox wait': { exit: 0, result: { messages: [{ messageID: 'm-wake', sequence: 1, kind: 'message' }] } },
+      'inbox watch': { exit: 0, result: { messages: [{ messageID: 'm-wake', sequence: 1, kind: 'message' }] } },
+      'inbox read': { exit: 0, result: { kind: 'message', sequence: 1, text: 'after restart' } },
+    },
+    {
+      XDG_CACHE_HOME: path.join(dir, 'cache'),
+      PIXLING_CLI: cli,
+      PIXLING_PROXY_DESK_CHECK_MS: '50',
+      CLAUDE_PID: String(process.pid),
+    },
+  );
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /after restart/);
+  assert.equal(r.calls.filter((c) => c[0] === 'resident' && c[1] === 'ensure').length, 1);
+}, 15_000);
+
+test('codex: stop hold exits mid-wait when the resident disconnects', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-codex-hold-disc-'));
+  const cli = path.join(dir, 'pixling');
+  fs.writeFileSync(
+    cli,
+    `#!/bin/sh\ncase "$*" in *"inbox wait"*) exec sleep 300;; esac\nexec ${JSON.stringify(FAKE)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const env = {
+    XDG_CACHE_HOME: path.join(dir, 'cache'),
+    PIXLING_CLI: cli,
+    PIXLING_PROXY_TURN_END_WAIT_MS: '60000',
+    PIXLING_PROXY_DESK_CHECK_MS: '100',
+  };
+  const base = { session_id: sid, last_assistant_message: 'Done.' };
+  run('codex', 'session-start', base, { 'resident ensure': ENSURED }, env);
+  const started = Date.now();
+  const r = run('codex', 'stop', base, { 'resident ensure': [ENSURED, { exit: 0, result: { state: 'stowed' } }] }, env);
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.json, {});
+  assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
+}, 15_000);
+
+test('codex: subagent hooks never bind a resident or start a forwarder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-codex-sub-hook-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache') };
+  const rollout = path.join(dir, 'rollout.jsonl');
+  fs.writeFileSync(
+    rollout,
+    JSON.stringify({ type: 'session_meta', payload: { source: { subagent: { thread_spawn: { depth: 1 } } } } }) + '\n',
+  );
+  for (const event of ['session-start', 'prompt', 'before-tool', 'stop']) {
+    const r = run(
+      'codex',
+      event,
+      { session_id: 'codex-sub-1', transcript_path: rollout, last_assistant_message: 'Sub done.' },
+      { 'resident ensure': ENSURED },
+      env,
+    );
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.json, {});
+    assert.deepEqual(r.calls, []);
+  }
+});
+
+test('codex: stop hold skips waiting when the resident is disconnected', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-codex-stop-disc-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const base = { session_id: sid, last_assistant_message: 'Done.' };
+  run('codex', 'session-start', base, { 'resident ensure': ENSURED }, env);
+  const unavailable = { exit: 5, error: { code: 'unavailable', detail: 'Pixling is not running' } };
+  const r = run('codex', 'stop', base, { 'message send': unavailable, 'resident ensure': unavailable }, env);
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.json, {});
+  assert.equal(
+    r.calls.some((c) => c[0] === 'inbox' && c[1] === 'wait'),
+    false,
+  );
+});

@@ -4,6 +4,7 @@ import { Deferred, type Duration, Effect, Fiber, Layer } from 'effect';
 import { TestClock } from 'effect/testing';
 import {
   askPermission,
+  DeliveryGone,
   ensureResident,
   observed,
   relay,
@@ -774,6 +775,24 @@ describe('relay', () => {
       yield* relay((texts) => Effect.sync(() => void delivered.push(...texts)));
       assert.deepStrictEqual(delivered, ['hello']);
       assert.isTrue(seen.stowed);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.live('stops immediately without retrying when deliver fails with DeliveryGone', () => {
+    let attempts = 0;
+    const { seen, layer } = harness({
+      waits: ['one'],
+      entries: { a: { kind: 'message', text: 'hello' } },
+    });
+    return Effect.gen(function* () {
+      yield* relay(() =>
+        Effect.suspend(() => {
+          attempts += 1;
+          return Effect.fail(new DeliveryGone({ reason: 'thread gone' }));
+        }),
+      );
+      assert.strictEqual(attempts, 1);
+      assert.strictEqual(seen.sent.length, 0);
     }).pipe(Effect.provide(layer));
   });
 });

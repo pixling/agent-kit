@@ -118,3 +118,86 @@ test('a client call that fails never reaches OpenCode', async () => {
   // A payload without what it should carry.
   await failing.event({ event: { type: 'session.created', properties: {} } });
 });
+
+test('V2 preserves event order across async root lookup and clears stale text on failed turns', async () => {
+  const before = calls().length;
+  const v2Replies: unknown[] = [];
+  const queue: { type: string; data?: unknown }[] = [];
+  let wake: (() => void) | null = null;
+  let closed = false;
+  const push = (ev: { type: string; data?: unknown }) => {
+    queue.push(ev);
+    wake?.();
+    wake = null;
+  };
+  const stop = plugin.setup({
+    session: {
+      prompt: async () => {},
+      // Slow root lookup: without serialized event handling, `session.execution.succeeded`
+      // could overtake `session.text.ended` and drop the final reply.
+      get: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return { parentID: null };
+      },
+    },
+    event: {
+      subscribe: ({ signal }) => ({
+        async *[Symbol.asyncIterator]() {
+          signal.addEventListener('abort', () => {
+            closed = true;
+            wake?.();
+          });
+          while (!closed) {
+            if (!queue.length) await new Promise<void>((resolve) => (wake = resolve));
+            while (queue.length) yield queue.shift()!;
+          }
+        },
+      }),
+    },
+    permission: {
+      reply: async (req) => {
+        v2Replies.push(req);
+      },
+    },
+  });
+
+  try {
+    // Emit text.ended and execution.succeeded back-to-back before session.get resolves.
+    push({ type: 'session.text.ended', data: { sessionID: 'ses_v2', text: 'Ordered V2 reply.' } });
+    push({ type: 'session.execution.succeeded', data: { sessionID: 'ses_v2' } });
+    // A permission answered on OpenCode's screen before its queued `permission.asked` runs
+    // must not surface on the resident or send a duplicate reply.
+    push({
+      type: 'permission.asked',
+      data: { id: 'p_early', sessionID: 'ses_v2', action: 'bash', resources: ['pwd'] },
+    });
+    push({ type: 'permission.replied', data: { sessionID: 'ses_v2', requestID: 'p_early' } });
+    // Failed turn must clear buffered text so a later empty completion does not reuse it.
+    push({ type: 'session.text.ended', data: { sessionID: 'ses_v2', text: 'Partial before failure.' } });
+    push({ type: 'session.execution.failed', data: { sessionID: 'ses_v2' } });
+    push({ type: 'session.execution.succeeded', data: { sessionID: 'ses_v2' } });
+    // Permission runs asynchronously without blocking subsequent events.
+    push({ type: 'permission.asked', data: { id: 'p_v2', sessionID: 'ses_v2', action: 'bash', resources: ['ls'] } });
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !v2Replies.length) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const after = calls().slice(before);
+    const sent = after.filter((c) => c[0] === 'message').map((c) => c[c.indexOf('--text') + 1]);
+    assert.ok(sent.includes('Ordered V2 reply.'), `expected ordered V2 reply in ${JSON.stringify(sent)}`);
+    assert.equal(
+      sent.filter((t) => t === 'Partial before failure.').length,
+      1,
+      `failed turn text must not be resent by trailing empty execution.succeeded: ${JSON.stringify(sent)}`,
+    );
+    assert.deepEqual(v2Replies, [{ sessionID: 'ses_v2', requestID: 'p_v2', decision: 'once' }]);
+    assert.equal(
+      after.filter((c) => c[0] === 'question' && c[1] === 'ask').length,
+      1,
+      'early-replied permission must not ask on the resident',
+    );
+  } finally {
+    stop();
+  }
+});

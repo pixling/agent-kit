@@ -1,6 +1,7 @@
 // The anti-corruption layer towards Codex: its field names, session file format and
 // output format stop here.
-import { Effect, Layer, Schema } from 'effect';
+import fs from 'node:fs';
+import { Effect, Layer, Predicate, Schema } from 'effect';
 import type { Activity } from '../../core/Activity.ts';
 import type { PermissionAnswer } from '../../core/Conversation.ts';
 import { readSettings } from '../../core/config.ts';
@@ -20,7 +21,69 @@ const Payload = Schema.Struct({
   stop_hook_active: Schema.optional(Schema.NullOr(Schema.Boolean)),
   tool_name: Text,
   tool_input: Schema.optional(Schema.Unknown),
+  agent_id: Text,
 });
+
+const SessionMeta = Schema.Struct({
+  type: Schema.Literal('session_meta'),
+  payload: Schema.Struct({
+    source: Schema.optional(Schema.Unknown),
+  }),
+});
+const decodeSessionMeta = Schema.decodeUnknownOption(SessionMeta);
+
+const CHUNK_BYTES = 64 * 1024;
+const MAX_FIRST_LINE_BYTES = 1024 * 1024;
+
+const readFirstLine = (filePath: string): string => {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const chunks: Buffer[] = [];
+      const buf = Buffer.allocUnsafe(CHUNK_BYTES);
+      let total = 0;
+      while (total < MAX_FIRST_LINE_BYTES) {
+        const toRead = Math.min(CHUNK_BYTES, MAX_FIRST_LINE_BYTES - total);
+        const n = fs.readSync(fd, buf, 0, toRead, total);
+        if (n <= 0) break;
+        const nl = buf.subarray(0, n).indexOf(0x0a);
+        if (nl >= 0) {
+          chunks.push(Buffer.from(buf.subarray(0, nl)));
+          break;
+        }
+        chunks.push(Buffer.from(buf.subarray(0, n)));
+        total += n;
+      }
+      return Buffer.concat(chunks).toString('utf8').trim();
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+};
+
+// Codex identifies subagent hooks via `agent_id` in the payload and marks subagent
+// rollouts with `session_meta.payload.source: { subagent: ... }` (or `"subagent"`).
+export const isCodexSubagent = (
+  agentId: string | null | undefined,
+  transcriptPath: string | null | undefined,
+): boolean => {
+  if (agentId && agentId.trim()) return true;
+  if (!transcriptPath) return false;
+  const firstLine = readFirstLine(transcriptPath);
+  if (!firstLine) return false;
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    return false;
+  }
+  const meta = decodeSessionMeta(parsed);
+  if (meta._tag === 'None') return false;
+  const source = meta.value.payload.source;
+  return source === 'subagent' || (Predicate.isObject(source) && 'subagent' in source);
+};
 
 const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }));
 
@@ -84,6 +147,7 @@ export const Codex = Layer.succeed(HookHost)(
           transcriptPath: p.transcript_path,
           toolName: p.tool_name,
           toolInput: p.tool_input,
+          inSubagent: isCodexSubagent(p.agent_id, p.transcript_path),
           // Not passed on: this id is not the one in the session file, and Codex has
           // written the call's line before the hook starts, so nothing needs waiting for.
           turnContinued: p.stop_hook_active,

@@ -1,7 +1,7 @@
 // What the proxy does for a conversation, in no host's terms. The type of each
 // program names what it needs; a runtime and an adapter supply it.
 import { createHash, randomUUID } from 'node:crypto';
-import { Clock, Effect, Exit, Option } from 'effect';
+import { Clock, Effect, Exit, Option, Predicate, Schema } from 'effect';
 import { admits, bubbles, type Activity, fingerprint, isDue, watches } from './Activity.ts';
 import { Desk, GONE, type InboxEntry, type Question } from '../pixling/Desk.ts';
 import { clip, permissionDetail, type Relayed, strings } from './text.ts';
@@ -544,10 +544,17 @@ export const residentDisconnected = Effect.fn('residentDisconnected')(function* 
   }
 });
 
-// Hands every batch the user writes to `deliver`, until interrupted or the resident
-// is put away. What was read is gone from the inbox, so a batch the host does not
-// take is kept and tried again, and the user is told once. A wait that ends at once
-// (not bound, Pixling refusing) backs off instead of spinning.
+// Raised by a relay `deliver` callback when the host target is permanently gone
+// (for example, a deleted thread) so retrying can never succeed.
+export class DeliveryGone extends Schema.TaggedError<DeliveryGone>()('DeliveryGone', {
+  reason: Schema.String,
+}) {}
+
+// Hands every batch the user writes to `deliver`, until interrupted, the resident
+// is put away, or `deliver` reports `DeliveryGone`. What was read is gone from the
+// inbox, so a batch the host temporarily refuses is kept and tried again, and the
+// user is told once. A wait that ends at once (not bound, Pixling refusing) backs
+// off instead of spinning.
 export const relay = <E, R>(deliver: (texts: ReadonlyArray<Relayed>) => Effect.Effect<void, E, R>) =>
   Effect.gen(function* () {
     const session = yield* CurrentSession;
@@ -566,6 +573,12 @@ export const relay = <E, R>(deliver: (texts: ReadonlyArray<Relayed>) => Effect.E
           undelivered = [];
           backoff = RELAY_BACKOFF_MS;
           continue;
+        }
+        if (Predicate.isTagged(handed.failure, 'DeliveryGone')) {
+          const reason =
+            'reason' in handed.failure && typeof handed.failure.reason === 'string' ? handed.failure.reason : '';
+          yield* Effect.logInfo(`${session.selector} delivery stopped${reason ? `: ${reason}` : ''}`);
+          return;
         }
         yield* Effect.logInfo(`${session.selector} delivery failed, keeping ${texts.length}`);
         if (!undelivered.length) {

@@ -16,7 +16,7 @@ import {
 } from '../src/adapters/antigravity/index.ts';
 import { DEFAULTS } from '../src/core/config.ts';
 import { ClaudeCode } from '../src/adapters/claude-code/index.ts';
-import { Codex, isExecRun } from '../src/adapters/codex/index.ts';
+import { Codex, isCodexSubagent, isExecRun } from '../src/adapters/codex/index.ts';
 import { HookHost } from '../src/runtimes/hook/HookHost.ts';
 
 const withHost = (layer: Layer.Layer<HookHost>, check: (host: HookHost['Service']) => Effect.Effect<void, unknown>) =>
@@ -321,5 +321,38 @@ describe('isExecRun', () => {
     ['', false],
   ])('%s: %s', (line, expected) => {
     assert.strictEqual(isExecRun(line), expected);
+  });
+});
+
+describe('isCodexSubagent', () => {
+  it('identifies subagents from agent_id and session_meta.payload.source', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-codex-sub-'));
+    const subRollout = path.join(dir, 'sub.jsonl');
+    fs.writeFileSync(
+      subRollout,
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { source: { subagent: { thread_spawn: { parent_thread_id: 'p1', depth: 1 } } } },
+      }) + '\n',
+    );
+    const cliRollout = path.join(dir, 'cli.jsonl');
+    fs.writeFileSync(cliRollout, JSON.stringify({ type: 'session_meta', payload: { source: 'cli' } }) + '\n');
+    const largeSubRollout = path.join(dir, 'large-sub.jsonl');
+    fs.writeFileSync(
+      largeSubRollout,
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { base_instructions: 'x'.repeat(80 * 1024), source: { subagent: { thread_spawn: { depth: 1 } } } },
+      }) +
+        '\n' +
+        JSON.stringify({ type: 'response_item', payload: {} }) +
+        '\n',
+    );
+
+    assert.isTrue(isCodexSubagent('agent-1', cliRollout));
+    assert.isTrue(isCodexSubagent(undefined, subRollout));
+    assert.isTrue(isCodexSubagent(undefined, largeSubRollout));
+    assert.isFalse(isCodexSubagent(undefined, cliRollout));
+    assert.isFalse(isCodexSubagent('', null));
   });
 });
