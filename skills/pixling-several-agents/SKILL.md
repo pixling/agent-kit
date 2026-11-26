@@ -12,7 +12,9 @@ compatibility: macOS with Pixling running, "CLI connection" on, and `pixling` on
 # Several agents, one resident
 
 Every agent binds the same `namespace`/`key` pair and writes with its own
-`--author`. See the `pixling` skill for binding and speaking.
+`--author` (or `"author"` via `pixling call message.send`). Set
+`PIXLING_FORMAT=json` or use `pixling call` to always get JSON output. See the
+`pixling` skill for binding and speaking.
 
 ## Choose the group's pair
 
