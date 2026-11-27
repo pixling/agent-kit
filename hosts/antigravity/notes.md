@@ -25,7 +25,7 @@ tilting its head at a question, turn reactions on in the settings
 | What the agent writes | As it goes: the text before each tool call (`PreToolUse`, read from the transcript in a detached process so agy does not wait), and the reply when the agent finishes (`PostInvocation`, with `Stop` as fallback). `show` in the settings decides which of it shows. Tool names come from `PreToolUse` |
 | Permission prompts | Not relayed. agy asks as usual |
 
-`agy -p` runs and subagent conversations get no resident (see `unattended`) and never hold open. Whenever Antigravity queues a local wake-up (a background task completion, a subagent reply, a timer, or a prompt you type in the terminal) — or if the resident is stowed or disconnected from Pixling — `PostInvocation` releases the wait immediately so Antigravity can continue without blocking.
+`agy -p` runs, subagent conversations, and `/btw` side questions get no resident (see `unattended`) and never hold open. Whenever Antigravity queues a local wake-up (a background task completion, a subagent reply, a timer, or a prompt you type in the terminal) — or if the resident is stowed or disconnected from Pixling — `PostInvocation` releases the wait immediately so Antigravity can continue without blocking.
 
 ## Going further
 

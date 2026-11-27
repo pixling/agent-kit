@@ -7,6 +7,8 @@ import { Effect, type Layer, Option } from 'effect';
 import {
   Antigravity,
   hasUndeliveredMessages,
+  isIgnoredSession,
+  isSideQuestionSession,
   isSubagentSession,
   MAX_HOLD_MS,
   readStepEndedReply,
@@ -222,6 +224,66 @@ describe('Antigravity', () => {
       assert.isFalse(isSubagentSession('hello', subTranscript));
       assert.isFalse(isSubagentSession('', userTranscript));
       assert.isFalse(isSubagentSession(undefined, null));
+    }),
+  );
+
+  it.effect('identifies /btw side-question sessions and fails safely on malformed or changed transcripts', () =>
+    Effect.sync(() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-btw-'));
+      const btwTranscript = path.join(dir, 'btw.jsonl');
+      fs.writeFileSync(
+        btwTranscript,
+        JSON.stringify({ step_index: 64, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'quick?' }) + '\n',
+      );
+      const normalTranscript = path.join(dir, 'normal.jsonl');
+      fs.writeFileSync(
+        normalTranscript,
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'hi' }) + '\n',
+      );
+      const changedSchemaTranscript = path.join(dir, 'changed.jsonl');
+      fs.writeFileSync(changedSchemaTranscript, JSON.stringify({ step_index: '64', kind: 'unknown' }) + '\n');
+      const malformedTranscript = path.join(dir, 'malformed.jsonl');
+      fs.writeFileSync(malformedTranscript, '{not valid json\n');
+      const hugeLineTranscript = path.join(dir, 'huge.jsonl');
+      fs.writeFileSync(hugeLineTranscript, JSON.stringify({ step_index: 12, content: 'x'.repeat(24 * 1024) }) + '\n');
+      const oversizedBrokenTranscript = path.join(dir, 'oversized.jsonl');
+      fs.writeFileSync(oversizedBrokenTranscript, 'x'.repeat(300 * 1024));
+
+      assert.isTrue(isSideQuestionSession('quick?', btwTranscript));
+      assert.isTrue(isIgnoredSession('quick?', btwTranscript));
+      assert.isTrue(isSideQuestionSession('/btw quick?', normalTranscript));
+      assert.isTrue(isSideQuestionSession('  /BTW\tcheck', null));
+      assert.isTrue(isSideQuestionSession('long prompt', hugeLineTranscript));
+      assert.isFalse(isSideQuestionSession('hi', normalTranscript));
+      assert.isFalse(isSideQuestionSession('/btwfoo', normalTranscript));
+      assert.isFalse(isIgnoredSession('hi', normalTranscript));
+      // Spec changes, malformed files, missing files, directories, and oversized lines never throw.
+      assert.isFalse(isSideQuestionSession('hi', changedSchemaTranscript));
+      assert.isFalse(isSideQuestionSession('hi', malformedTranscript));
+      assert.isFalse(isSideQuestionSession('hi', path.join(dir, 'missing.jsonl')));
+      assert.isFalse(isSideQuestionSession('hi', dir));
+      assert.isFalse(isSideQuestionSession('hi', oversizedBrokenTranscript));
+      assert.isFalse(isIgnoredSession('hi', dir));
+    }),
+  );
+
+  it.live('releases watchUndelivered immediately if the session directory is deleted while waiting', () =>
+    Effect.gen(function* () {
+      const sysDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-agy-deleted-'));
+      const logsDir = path.join(sysDir, 'logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+      const transcript = path.join(logsDir, 'transcript.jsonl');
+      fs.writeFileSync(transcript, '');
+
+      const removeTimer = setTimeout(() => {
+        fs.rmSync(sysDir, { recursive: true, force: true });
+      }, 40);
+      try {
+        const woke = yield* watchUndelivered(transcript).pipe(Effect.timeoutOption('2 seconds'));
+        assert.isTrue(Option.isSome(woke));
+      } finally {
+        clearTimeout(removeTimer);
+      }
     }),
   );
 

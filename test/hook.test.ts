@@ -945,6 +945,52 @@ test('antigravity: subagent sessions never bind a resident or hold open', () => 
   assert.deepEqual(tool.calls, []);
 });
 
+test('antigravity: /btw side-question sessions never bind a resident or hold open', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-btw-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const transcript = path.join(dir, 'transcript_full.jsonl');
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({
+      step_index: 64,
+      type: 'USER_INPUT',
+      source: 'USER_EXPLICIT',
+      content: '<USER_REQUEST>\nquick question\n</USER_REQUEST>',
+    }) +
+      '\n' +
+      JSON.stringify({ step_index: 65, type: 'PLANNER_RESPONSE', source: 'MODEL', content: 'Side answer.' }) +
+      '\n',
+  );
+  const btwPayload = { conversationId: 'btw-conv-1', transcriptPath: transcript, lastUserInput: 'quick question' };
+
+  for (const event of ['session-start', 'prompt', 'post-invocation', 'stop']) {
+    const r = run('antigravity', event, btwPayload, { 'resident ensure': ENSURED, ...INBOX }, env);
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.json, {});
+    assert.deepEqual(r.calls, []);
+  }
+  const tool = run('antigravity', 'before-tool', { ...btwPayload, toolCall: { name: 'read_file', args: {} } }, {}, env);
+  assert.deepEqual(tool.json, { decision: 'ask' });
+  assert.deepEqual(tool.calls, []);
+});
+
+test('antigravity: /btw prefix in lastUserInput skips even without a readable transcript', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-btw-cmd-'));
+  const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
+  const payload = {
+    conversationId: 'btw-conv-2',
+    transcriptPath: path.join(dir, 'missing.jsonl'),
+    lastUserInput: '/btw what is this?',
+  };
+
+  for (const event of ['session-start', 'prompt', 'post-invocation', 'stop']) {
+    const r = run('antigravity', event, payload, { 'resident ensure': ENSURED, ...INBOX }, env);
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.json, {});
+    assert.deepEqual(r.calls, []);
+  }
+});
+
 test('antigravity: post-invocation skips waiting when undelivered messages are already queued', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixling-proxy-agy-prequeue-'));
   const env = { XDG_CACHE_HOME: path.join(dir, 'cache'), PIXLING_PROXY_TURN_END_WAIT_MS: '60000' };
